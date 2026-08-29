@@ -194,6 +194,21 @@ final class WEKitTests: XCTestCase {
         XCTAssertEqual(bound.resolveFloat(store), 1.5)
     }
 
+    /// A `.mdl` is third-party input, so every truncation of a plausible header
+    /// has to fail soft rather than trap.
+    func testPuppetParserSurvivesTruncatedInput() {
+        var header = Data("MDLV0016\0".utf8)
+        header.append(contentsOf: [9, 0, 0x80, 1])
+        header.append(contentsOf: [1, 0, 0, 0, 1, 0, 0, 0])
+        header.append(Data("materials/arm.json\0".utf8))
+        header.append(contentsOf: [UInt8](repeating: 0, count: 64))
+        for length in 0...header.count {
+            _ = PuppetModel.parse(header.prefix(length))
+        }
+        XCTAssertNil(PuppetModel.parse(Data()))
+        XCTAssertNil(PuppetModel.parse(Data("not a model at all".utf8)))
+    }
+
     func testSceneDefaultsMatchRendererSpec() {
         let scene = WEScene(json: .object([:]))
         XCTAssertEqual(scene.general.clearColor.resolve(nil).vec3, SIMD3<Float>(1, 1, 1))

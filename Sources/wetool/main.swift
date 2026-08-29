@@ -18,7 +18,7 @@ import UniformTypeIdentifiers
 
 let args = CommandLine.arguments.dropFirst()
 guard let command = args.first else {
-    print("usage: wetool <ls|info|tex|shader|compile-all|render|pipelines|scripts|sound> ...")
+    print("usage: wetool <ls|info|tex|shader|compile-all|render|pipelines|scripts|sound|puppet> ...")
     exit(2)
 }
 
@@ -83,6 +83,30 @@ case "info":
         for o in scene.objects {
             let effects = o.effects.map { ($0.file as NSString).lastPathComponent == "effect.json" ? ($0.file as NSString).deletingLastPathComponent : $0.file }
             print("  [\(o.id)] \(o.kind) \(o.name)  image=\(o.imagePath ?? "-") particle=\(o.particlePath ?? "-") effects=\(effects)")
+        }
+    }
+
+case "puppet":
+    // Parses every .mdl a wallpaper carries, with no renderer, which is how you
+    // tell a broken file from a broken draw.
+    guard let dir = rest.first else { fail("usage: wetool puppet <dir>") }
+    let (project, locator) = makeLocator(dir)
+    guard let sceneJSON = locator.json(project.file) else { fail("no scene file") }
+    let scene = WEScene(json: sceneJSON)
+    var paths: [String] = []
+    for object in scene.objects {
+        guard let image = object.imagePath, let model = locator.model(image) else { continue }
+        if let puppet = model.puppet, !paths.contains(puppet) { paths.append(puppet) }
+    }
+    if paths.isEmpty { print("no puppets") }
+    for path in paths {
+        guard let data = locator.data(path) else { print("\(path): not found"); continue }
+        guard let model = PuppetModel.parse(data) else { print("\(path): FAILED to parse (\(data.count) bytes)"); continue }
+        print("\(path): \(model.vertices.count) vertices, \(model.indices.count / 3) triangles, "
+              + "\(model.bones.count) bones, \(model.animations.count) animations")
+        for bone in model.bones { print("    bone \(bone.name) parent=\(bone.parent.map(String.init) ?? "-")") }
+        for a in model.animations {
+            print("    anim id=\(a.id) \(a.name) mode=\(a.mode) fps=\(a.fps) frames=\(a.frameCount) tracks=\(a.tracks.count)")
         }
     }
 

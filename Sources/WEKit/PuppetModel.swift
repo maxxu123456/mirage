@@ -346,13 +346,20 @@ private struct Cursor {
     }
 
     /// Length-prefixed string, the only string form in the body of the file.
+    /// A NUL-terminated string.
+    ///
+    /// Unlike `scene.pkg`, which length-prefixes its names, `.mdl` writes plain
+    /// C strings: the material path sits at byte 21 as `materials/arm.json\0`.
+    /// Reading a length word here consumes the first four characters as a size
+    /// and the whole file fails to parse.
     mutating func sizedString() -> String? {
-        guard let raw = u32() else { return nil }
-        let length = Int(raw)
-        guard length <= PuppetReader.maximumStringByteCount, length <= remaining else { return nil }
         let start = data.startIndex + offset
-        let text = String(decoding: data[start..<(start + length)], as: UTF8.self)
-        offset += length
+        var end = start
+        let limit = min(data.endIndex, start + PuppetReader.maximumStringByteCount)
+        while end < limit, data[end] != 0 { end = data.index(after: end) }
+        guard end < limit, data[end] == 0 else { return nil }
+        let text = String(decoding: data[start..<end], as: UTF8.self)
+        offset += data.distance(from: start, to: end) + 1
         return text
     }
 
@@ -656,7 +663,22 @@ private enum PuppetReader {
         if layout == .alternate {
             guard c.skip(2) else { return nil }
         } else if version >= 3 {
-            guard c.skip(1) else { return nil }
+            // u32 event count, then a flag saying whether per-bone alpha curves
+            // follow, and if so one curve per track: a bone id, a byte count and
+            // that many bytes, one float per frame. Skipping a single byte here
+            // leaves the cursor inside the count and every later animation in
+            // the file is read as garbage.
+            guard let rawEvents = c.u32(), Int(rawEvents) <= c.remaining / 8 else { return nil }
+            for _ in 0..<Int(rawEvents) {
+                guard c.skip(4), c.sizedString() != nil else { return nil }
+            }
+            guard let hasBoneAlpha = c.u8() else { return nil }
+            if hasBoneAlpha != 0 {
+                for _ in 0..<tracks.count {
+                    guard c.skip(4), let byteCount = c.u32(),
+                          Int(byteCount) <= c.remaining, c.skip(Int(byteCount)) else { return nil }
+                }
+            }
         } else {
             guard let rawEvents = c.u32(), Int(rawEvents) <= c.remaining / 8 else { return nil }
             for _ in 0..<Int(rawEvents) {
