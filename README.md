@@ -22,6 +22,8 @@ natively.
 * **One wallpaper per display**, remembered across restarts.
 * **Pause rules** so it does not waste battery: pause when a window covers the screen, pause on
   battery power, pause after an idle timeout, and a frame rate cap.
+* **Edit a wallpaper's own options**: the sliders, toggles, colour wells and dropdowns its author
+  defined, applied straight away and remembered.
 * Mute or set the volume, and launch at login.
 
 ## Requirements

@@ -369,9 +369,29 @@ case "render":
     if let i = rest.firstIndex(of: "--frames"), i + 1 < rest.count { frames = max(1, Int(rest[i + 1]) ?? 1) }
     let setupStart = Date()
     let (project, locator) = makeLocator(rest[0])
+    // --property name=value, repeatable, so a wallpaper's own options can be
+    // exercised without the app.
+    var overrides: [String: JSON] = [:]
+    var pi = 0
+    while pi < rest.count {
+        if rest[pi] == "--property", pi + 1 < rest.count {
+            let pair = rest[pi + 1]
+            if let eq = pair.firstIndex(of: "=") {
+                let name = String(pair[pair.startIndex..<eq])
+                let raw = String(pair[pair.index(after: eq)...])
+                if let number = Double(raw) { overrides[name] = .number(number) }
+                else if raw == "true" || raw == "false" { overrides[name] = .bool(raw == "true") }
+                else { overrides[name] = .string(raw) }
+            }
+            pi += 2
+            continue
+        }
+        pi += 1
+    }
     // Like the app, the scene renders at the resolution it was authored at unless
     // --display-res asks for the output size instead.
-    let renderer = try SceneRenderer(project: project, locator: locator, outputSize: size,
+    let renderer = try SceneRenderer(project: project, locator: locator,
+                                     propertyOverrides: overrides, outputSize: size,
                                      scaleToOutput: rest.contains("--display-res"))
     if let forced = stringOption(rest, "--force-visible") {
         renderer.forceVisibleObjects = Set(forced.split(separator: ",").compactMap { Int($0) })

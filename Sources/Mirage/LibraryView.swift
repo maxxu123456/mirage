@@ -185,6 +185,27 @@ struct DetailPanel: View {
     let item: WallpaperItem?
     @EnvironmentObject private var controller: WallpaperController
     @State private var properties: [WEUserProperty] = []
+    /// Bumped after an edit so the controls re-read the store.
+    @State private var editRevision = 0
+
+    /// Properties Mirage can offer a control for, minus any hidden by their
+    /// own `condition` given the current values.
+    private var editableProperties: [WEUserProperty] {
+        guard let item else { return [] }
+        let store = PropertyStore(properties: properties, overrides: controller.propertyOverrides(for: item))
+        return properties.filter { property in
+            guard property.isEditable else { return false }
+            guard let condition = property.condition, !condition.isEmpty else { return true }
+            return store.evaluateCondition(condition)
+        }
+    }
+
+    private func value(of property: WEUserProperty) -> JSON {
+        guard let item else { return property.defaultValue }
+        return controller.propertyOverrides(for: item)[property.name] ?? property.defaultValue
+    }
+
+    private func bumpEdits() { editRevision &+= 1 }
 
     var body: some View {
         if let item {
@@ -205,19 +226,24 @@ struct DetailPanel: View {
                     Button("Set on All Displays") { controller.assignToAllDisplays(item) }
                         .buttonStyle(.borderedProminent)
 
-                    if !properties.isEmpty {
+                    if !editableProperties.isEmpty {
                         Divider()
-                        Text("Properties").font(.headline)
-                        Text("\(properties.count) options defined by this wallpaper.")
+                        HStack {
+                            Text("Properties").font(.headline)
+                            Spacer()
+                            Button("Reset") { controller.resetProperties(for: item); bumpEdits() }
+                                .buttonStyle(.link)
+                                .disabled(controller.propertyEdits[item.id] == nil)
+                        }
+                        Text("Set by this wallpaper's author. Changes apply straight away.")
                             .font(.caption).foregroundStyle(.secondary)
-                        ForEach(properties) { property in
-                            HStack {
-                                Text(property.displayLabel).lineLimit(1)
-                                Spacer()
-                                Text(String(describing: property.kind))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                        ForEach(editableProperties) { property in
+                            PropertyControl(property: property,
+                                            value: value(of: property),
+                                            onChange: { newValue in
+                                                controller.setProperty(property.name, to: newValue, on: item)
+                                                bumpEdits()
+                                            })
                         }
                     }
                     Spacer()
@@ -232,6 +258,95 @@ struct DetailPanel: View {
 
     static func loadProperties(_ item: WallpaperItem) -> [WEUserProperty] {
         guard let directory = item.projectDirectory, let project = try? WEProject.load(directory: directory) else { return [] }
-        return project.properties.filter { $0.kind != .group && !$0.displayLabel.isEmpty }
+        return project.properties.filter { !$0.displayLabel.isEmpty }
+    }
+}
+
+/// One editable Wallpaper Engine property.
+///
+/// The control follows the property's declared type, which is what the author
+/// designed the wallpaper around: a slider that carries `fraction` really is a
+/// 0 to 1 value, and a combo's options are stored as strings even when they
+/// look like numbers.
+struct PropertyControl: View {
+    let property: WEUserProperty
+    let value: JSON
+    let onChange: (JSON) -> Void
+
+    var body: some View {
+        switch property.kind {
+        case .bool:
+            Toggle(property.displayLabel, isOn: Binding(
+                get: { value.bool ?? false },
+                set: { onChange(.bool($0)) }))
+                .toggleStyle(.switch)
+
+        case .slider:
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(property.displayLabel).lineLimit(1)
+                    Spacer()
+                    Text(formatted).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
+                Slider(value: Binding(
+                    get: { value.double ?? property.defaultValue.double ?? 0 },
+                    set: { onChange(.number($0)) }),
+                       in: (property.min ?? 0)...(max(property.min ?? 0, property.max ?? 1)))
+            }
+
+        case .color:
+            ColorPicker(property.displayLabel, selection: Binding(
+                get: { Self.color(from: value) },
+                set: { onChange(Self.json(from: $0)) }), supportsOpacity: false)
+
+        case .combo:
+            Picker(property.displayLabel, selection: Binding(
+                get: { Self.comboKey(value) },
+                set: { onChange(.string($0)) })) {
+                    ForEach(property.options, id: \.value) { option in
+                        Text(option.label).tag(option.value)
+                    }
+                }
+
+        case .textinput, .text:
+            VStack(alignment: .leading, spacing: 2) {
+                Text(property.displayLabel).lineLimit(1)
+                TextField("", text: Binding(
+                    get: { value.string ?? "" },
+                    set: { onChange(.string($0)) }))
+                    .textFieldStyle(.roundedBorder)
+            }
+
+        default:
+            EmptyView()
+        }
+    }
+
+    private var formatted: String {
+        let current = value.double ?? 0
+        let digits = property.precision ?? (property.fraction ? 2 : 0)
+        return String(format: "%.\(max(0, min(4, digits)))f", current)
+    }
+
+    /// Wallpaper Engine stores a colour as "r g b" in 0 to 1.
+    private static func color(from json: JSON) -> Color {
+        let parts = json.floats ?? [1, 1, 1]
+        guard parts.count >= 3 else { return .white }
+        return Color(red: Double(parts[0]), green: Double(parts[1]), blue: Double(parts[2]))
+    }
+
+    private static func json(from color: Color) -> JSON {
+        let rgb = NSColor(color).usingColorSpace(.sRGB) ?? .white
+        return .string([rgb.redComponent, rgb.greenComponent, rgb.blueComponent]
+            .map { JSON.numberString(Double($0)) }
+            .joined(separator: " "))
+    }
+
+    /// A combo's stored value may be a number or a string; its options are strings.
+    private static func comboKey(_ json: JSON) -> String {
+        if let text = json.string { return text }
+        if let number = json.double { return JSON.numberString(number) }
+        if let flag = json.bool { return flag ? "1" : "0" }
+        return ""
     }
 }

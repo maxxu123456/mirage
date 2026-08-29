@@ -21,12 +21,50 @@ public final class PropertyStore {
         for (k, v) in overrides where definitions[k] == nil { values[k] = v }
     }
 
+    /// Bumped on every change, so a caller can skip work when nothing moved.
+    public private(set) var revision = 0
+
     public func value(_ name: String) -> JSON? { values[name] }
 
-    public func set(_ name: String, _ value: JSON) { values[name] = value }
+    public func set(_ name: String, _ value: JSON) {
+        let shaped = coerced(value, for: name)
+        guard values[name] != shaped else { return }
+        values[name] = shaped
+        revision &+= 1
+    }
+
+    /// Merges a batch of edits, bumping the revision once.
+    public func apply(_ incoming: [String: JSON]) {
+        var changed = false
+        for (name, value) in incoming {
+            let shaped = coerced(value, for: name)
+            if values[name] != shaped { values[name] = shaped; changed = true }
+        }
+        if changed { revision &+= 1 }
+    }
+
+    /// Reshapes an incoming value to the JSON case the property's default uses.
+    ///
+    /// `DynamicValue.resolve` switches on the literal's type to coerce a bound
+    /// value, and `overrides` only drops a value that `==` the default, so a
+    /// number written where the wallpaper stores a string would both resolve
+    /// wrongly and persist forever.
+    public func coerced(_ value: JSON, for name: String) -> JSON {
+        guard let definition = definitions[name] else { return value }
+        switch definition.defaultValue {
+        case .bool: return .bool(value.bool ?? false)
+        case .number: return .number(value.double ?? 0)
+        case .string:
+            if case .string = value { return value }
+            if let d = value.double { return .string(JSON.numberString(d)) }
+            if let b = value.bool { return .string(b ? "1" : "0") }
+            return value
+        default: return value
+        }
+    }
 
     public func reset(_ name: String) {
-        if let def = definitions[name] { values[name] = def.defaultValue }
+        if let def = definitions[name] { set(name, def.defaultValue) }
     }
 
     /// Values that differ from the defaults (for persistence).

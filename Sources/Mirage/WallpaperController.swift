@@ -16,6 +16,9 @@ final class WallpaperController: ObservableObject {
     @Published private(set) var displays: [DisplayInfo] = []
     /// display id → wallpaper id
     @Published private(set) var assignments: [String: String] = [:]
+    /// A wallpaper's edited user properties, keyed by item id then property name.
+    /// Stored as plain plist values so `UserDefaults` can hold them directly.
+    @Published private(set) var propertyEdits: [String: [String: Any]] = [:]
     @Published private(set) var isPaused = false
     @Published private(set) var lastError: String?
 
@@ -39,11 +42,14 @@ final class WallpaperController: ObservableObject {
     private var manuallyPaused = false
 
     private static let assignmentsKey = "wallpaper.assignments"
+    private static let propertiesKey = "wallpaper.properties"
 
     init(library: WallpaperLibrary, settings: AppSettings) {
         self.library = library
         self.settings = settings
         assignments = (UserDefaults.standard.dictionary(forKey: WallpaperController.assignmentsKey) as? [String: String]) ?? [:]
+        propertyEdits = (UserDefaults.standard.dictionary(forKey: WallpaperController.propertiesKey)
+            as? [String: [String: Any]]) ?? [:]
         renderContext = try? RenderContext()
         refreshDisplays()
         NSLog("Mirage: %d displays %@, %d library items, assignments %@",
@@ -141,6 +147,41 @@ final class WallpaperController: ObservableObject {
         }
     }
 
+    // MARK: User properties
+
+    /// The wallpaper's own properties, with the user's edits applied.
+    func propertyOverrides(for item: WallpaperItem) -> [String: JSON] {
+        guard let stored = propertyEdits[item.id] else { return [:] }
+        var out: [String: JSON] = [:]
+        for (name, value) in stored { out[name] = JSON(any: value) }
+        return out
+    }
+
+    /// Edits one property and shows it. A scene that is already on screen takes
+    /// the value without reloading; anything else is rebuilt.
+    func setProperty(_ name: String, to value: JSON, on item: WallpaperItem) {
+        var stored = propertyEdits[item.id] ?? [:]
+        stored[name] = value.anyValue
+        propertyEdits[item.id] = stored
+        UserDefaults.standard.set(propertyEdits, forKey: WallpaperController.propertiesKey)
+        for (displayId, assigned) in assignments where assigned == item.id {
+            if let view = sceneViews[displayId] {
+                view.setUserProperty(name, value)
+            } else if let current = library.item(withId: assigned) {
+                show(current, on: displayId)
+            }
+        }
+    }
+
+    func resetProperties(for item: WallpaperItem) {
+        propertyEdits.removeValue(forKey: item.id)
+        UserDefaults.standard.set(propertyEdits, forKey: WallpaperController.propertiesKey)
+        for (displayId, assigned) in assignments where assigned == item.id {
+            show(item, on: displayId)
+        }
+        _ = item
+    }
+
     // MARK: Presentation
 
     private func teardownViews(for displayId: String) {
@@ -203,6 +244,7 @@ final class WallpaperController: ObservableObject {
                 if pixels.0 > 0, pixels.1 > 0 { outputSize = pixels }
             }
             let scaleToOutput = settings.renderAtDisplayResolution
+            let overrides = propertyOverrides(for: item)
             loaderQueue.async { [weak self] in
                 let outcome: Result<SceneRenderer, Error>
                 do {
@@ -211,6 +253,7 @@ final class WallpaperController: ObservableObject {
                                                    assetsDirectories: AssetLocator.defaultAssetsDirectories(),
                                                    fallbackDirectory: ResourceLocator.fallbackAssetsDirectory())
                     outcome = .success(try SceneRenderer(project: project, locator: locator, context: context,
+                                                          propertyOverrides: overrides,
                                                           outputSize: outputSize, scaleToOutput: scaleToOutput))
                 } catch {
                     outcome = .failure(error)

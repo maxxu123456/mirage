@@ -23,8 +23,26 @@ public struct WEUserProperty: Identifiable, Hashable {
     public let options: [Option]
     public let condition: String?
     public let order: Int
+    /// Position in the file, used to break ties on `order`, which is not unique.
+    public let index: Int
 
     public var id: String { name }
+
+    /// A decorative heading rather than a value the user sets. Several corpus
+    /// properties have no `type` at all and exist only to label a group.
+    public var isHeading: Bool {
+        kind == .group || (kind == .text && defaultValue.isNull) || (kind == .unknown && defaultValue.isNull)
+    }
+
+    /// Whether Mirage offers a control for it.
+    public var isEditable: Bool {
+        guard !isHeading else { return false }
+        switch kind {
+        case .bool, .slider, .color, .combo, .textinput: return true
+        case .text: return !defaultValue.isNull
+        default: return false
+        }
+    }
 
     public init(name: String, json: JSON, index: Int) {
         self.name = name
@@ -50,6 +68,7 @@ public struct WEUserProperty: Identifiable, Hashable {
         }
         self.condition = json["condition"].string
         self.order = json["order"].int ?? json["index"].int ?? index
+        self.index = index
     }
 
     public static func == (a: WEUserProperty, b: WEUserProperty) -> Bool { a.name == b.name && a.defaultValue == b.defaultValue }
@@ -148,7 +167,9 @@ public struct WEProject {
                 props.append(WEUserProperty(name: key, json: value, index: i))
             }
         }
-        props.sort { $0.order < $1.order }
+        // Swift's sort is not stable and `order` is not unique, so ties fall back
+        // to the order the file lists them in.
+        props.sort { $0.order != $1.order ? $0.order < $1.order : $0.index < $1.index }
         self.properties = props
         self.supportsAudioProcessing = general["supportsaudioprocessing"].bool ?? false
     }

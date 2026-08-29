@@ -172,8 +172,15 @@ Other limitations:
 * **Effect `visible` and combos resolve once at load.** Toggling a user property that gates an effect
   (or changes a combo) needs the wallpaper reloaded. Object `visible`, colour, alpha,
   origin/scale/angles and shader constants *are* re-evaluated every frame.
-* **Property controls in the UI are read-only.** `PropertyStore` already drives live bindings; the
-  detail panel lists properties instead of offering sliders, toggles and colour wells.
+* **A wallpaper's own properties are editable.** The library's detail panel offers the control each
+  property's type asks for (toggle, slider, colour well, combo, text), hides one whose `condition`
+  is false, and writes the edit into `UserDefaults` under `wallpaper.properties` keyed by item id.
+  A scene already on screen takes the new value without reloading: `SceneRenderer.setUserProperty`
+  leaves it in a lock-guarded mailbox that the render thread drains at the top of the next frame, so
+  an edit lands on a frame boundary rather than mid-frame, and scripts are re-told at the same
+  point. `wetool render --property name=value` does the same thing without the app.
+  What still needs a reload is an effect that is *gated* by a property, since the set of passes is
+  resolved at load.
 * **`_rt_MipMappedFrameBuffer` is aliased to the scene target with no mip chain**, so shaders that
   sample it by LOD (rough reflections) always read level 0.
 * **Multi-image animated textures** upload only image 0.
@@ -694,18 +701,21 @@ only by accident.
 
 In priority order, with everything needed already on disk:
 
-1. **Performance.** This is now the largest user-visible problem: `Pixel City` still runs at about
+1. **Effect visibility without a reload.** Only the *set* of passes depends on the store at load:
+   `buildLayers` filters `object.effects` by `visible.resolveBool(store)`. Compiling every effect and
+   re-running `relocateBlending()` + `wirePasses()` over a filtered subset would make a property that
+   gates an effect live, and would make script-driven `effect.visible` work too. 46 effect `visible`
+   values across the corpus are bound to user properties, and only 15 of 308 effects are hidden at
+   default settings, so eager compilation costs about 5%.
+2. **Performance.** This is now the largest user-visible problem: `Pixel City` still runs at about
    10 fps. The list in section 3 is unchanged and still ordered by expected impact.
-2. **Puppet warp.** `PuppetModel` parses the mesh and computes bone matrices. The renderer needs a
+3. **Puppet warp.** `PuppetModel` parses the mesh and computes bone matrices. The renderer needs a
    skinned vertex layout, `SKINNING` / `BONECOUNT` combos and a `g_Bones` uniform array. Its bind
    transforms are read column-major, which no synthetic test can falsify: if the first real puppet
    renders inside out, transpose there before looking anywhere else. The scripting layer's
    animation stubs become real at the same time.
-3. **Live property edits.** `PropertyStore` drives bindings already, and
-   `ScriptRuntime.userPropertiesChanged` re-delivers them to scripts, but nothing calls it: the
-   settings UI still lists properties instead of offering controls.
-4. **Bloom**, then the **audio visualiser** (needs ScreenCaptureKit audio capture and the matching
-   permission), then **rope particles**.
+4. The **audio visualiser** (needs system audio capture and the matching permission), then
+   **rope particles**.
 
 ## 8. Conventions and gotchas
 

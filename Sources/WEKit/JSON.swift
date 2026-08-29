@@ -243,7 +243,7 @@ public enum JSON: Equatable, CustomStringConvertible {
         return Int(exactly: value.rounded())
     }
 
-    static func numberString(_ value: Double) -> String {
+    public static func numberString(_ value: Double) -> String {
         if value.isFinite, value == value.rounded(), let integer = Int64(exactly: value) {
             return String(integer)
         }

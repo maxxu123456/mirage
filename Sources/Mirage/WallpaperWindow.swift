@@ -102,6 +102,12 @@ final class SceneWallpaperView: MTKView {
         sound?.setVolume(volume, muted: muted)
     }
 
+    /// Hands an edited user property to the running scene. The renderer takes it
+    /// on its own thread at the top of the next frame.
+    func setUserProperty(_ name: String, _ value: JSON) {
+        renderer.setUserProperty(name, value)
+    }
+
     var fpsCap: Int {
         get { preferredFramesPerSecond }
         set { preferredFramesPerSecond = max(1, newValue) }

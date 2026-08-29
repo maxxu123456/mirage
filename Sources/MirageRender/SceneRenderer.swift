@@ -79,6 +79,37 @@ public final class SceneRenderer {
     /// Set MIRAGE_DEBUG=1 to log every encoded pass.
     private let debugLogging = ProcessInfo.processInfo.environment["MIRAGE_DEBUG"] != nil
 
+    private let inboxLock = NSLock()
+    private var pendingProperties: [String: JSON] = [:]
+
+    /// Hands edited user properties to the scene from another thread.
+    ///
+    /// Nothing here touches the store, Metal or JavaScriptCore: the values wait
+    /// in a mailbox and the render thread drains it at the top of the next
+    /// frame, so an edit lands on a frame boundary rather than mid-frame.
+    public func setUserProperties(_ values: [String: JSON]) {
+        guard !values.isEmpty else { return }
+        inboxLock.lock()
+        for (name, value) in values { pendingProperties[name] = value }
+        inboxLock.unlock()
+    }
+
+    public func setUserProperty(_ name: String, _ value: JSON) {
+        setUserProperties([name: value])
+    }
+
+    private func applyPendingProperties() {
+        inboxLock.lock()
+        let incoming = pendingProperties
+        pendingProperties.removeAll(keepingCapacity: true)
+        inboxLock.unlock()
+        guard !incoming.isEmpty else { return }
+        store.apply(incoming)
+        // Scripts read the properties at registration and on change, never by
+        // observing the store.
+        scripts?.userPropertiesChanged(store)
+    }
+
     /// Object ids forced visible whatever the scene says, for debugging a layer
     /// that is hidden by default.
     public var forceVisibleObjects: Set<Int> = []
@@ -1216,6 +1247,7 @@ public final class SceneRenderer {
     /// in seconds (the caller owns the epoch), and feeds `g_Time` and every animation.
     /// The scene is composed at its own resolution and then presented into `target`.
     public func render(into target: MTLTexture, time: Double, commandBuffer: MTLCommandBuffer) {
+        applyPendingProperties()
         if lastTime < 0 { lastTime = time }
         let safeTime = time.isFinite ? time : 0
         let floatTime = Float(safeTime)
