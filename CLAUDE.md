@@ -142,6 +142,8 @@ and ping-pong wiring), `SceneRenderer` (scene build, frame loop, present, offscr
   Wallpaper Engine JS shim: user properties reach `wallpaperPropertyListener`, the cursor reaches
   `wallpaperMouseX/Y` and a synthesised `mousemove`, `wallpaperRegisterAudioListener` gets its 128
   bins (silent, since there is no capture), and pausing holds `requestAnimationFrame` and the media.
+* **Puppet warp**: a layer whose model names a `.mdl` draws as the skinned mesh it is, with its
+  animations. See section 7.4 for the two things that make it work and are easy to get wrong.
 * **Audio visualiser**: a Core Audio process tap feeds `g_AudioSpectrum{16,32,64}{Left,Right}`, so
   audio reactive layers move with whatever the Mac is playing. See section 7.6.
 * **Bloom**: `general.bloom` renders, through the same four stock materials Wallpaper Engine uses.
@@ -164,7 +166,6 @@ Counted over the 12-wallpaper corpus, where 201 image objects render and the res
 | Missing | In corpus | Effect |
 |---|---|---|
 | **Media integration** | 1 | `mediaPlaybackChanged` is told once that nothing is playing, which is the truth, but a now-playing title, artist or album art never arrives, so a media wallpaper shows its idle layout. |
-| **Puppet warp** (`.mdl`) | 1 | Parsing, bone matrices, the skinned vertex layout, the `SKINNING` / `BONECOUNT` combos and the `g_Bones` palette all exist and are verified, but drawing the mesh is **off by default** (`MIRAGE_PUPPET=1`) because it is not correct everywhere yet. See section 7.4. |
 | **Lights / `shape`** | 0 | `PerformLighting_V1` is stubbed to return black. |
 | **Rope particle renderers** | 5 of 69 | `rope` and `ropetrail` fall back to sprites; they need `genericropeparticle` and a Catmull-Rom spline. |
 
@@ -655,7 +656,7 @@ like every other effect combo.
 `wetool scripts <dir> [--frames N] [--object NAME]` runs the whole scripting layer with no Metal and
 no renderer, which is how you tell a broken script from a broken pass chain.
 
-### 7.4 Sound, web and bloom: built, plus puppets
+### 7.4 Sound, web, bloom and puppets: built
 
 *Sound*: `WallpaperSoundPlayer` extracts `sounds/*` from the pkg into
 `~/Library/Caches/Mirage/audio` once, then plays them with `AVAudioPlayer` in `loop` or `random`
@@ -700,6 +701,30 @@ only by accident.
 
 ---
 
+*Puppet warp*: a layer whose model names a `.mdl` uploads the mesh into real buffers (even the
+smallest puppet is ten times Metal's inline vertex limit), draws it indexed with
+`VertexLayout.puppet`, and gets `SKINNING=1` plus `BONECOUNT=n` on whichever pass draws the layer,
+with the palette arriving as `ShaderValue.mat4x3Array`. Two things were not obvious and cost a day
+between them:
+
+* **Some shaders ignore `g_ModelViewProjectionMatrix`.** `genericimage4` with `LIGHTING` positions
+  through `g_ViewProjectionMatrix * g_ModelMatrix`, exactly as `passthrough.vert` ignores the MVP
+  (section 6, convention 2). Putting the puppet transform only in the MVP made those layers vanish
+  while `genericimage2` layers were perfect. The transform now occupies the model slot too, and the
+  view-projection stays the identity for image passes so the product is the same matrix.
+* **The 80 byte vertex carries a normal and a signed tangent**, and a normal-mapped shader declares
+  `a_Tangent4` at location 13. Uploading a constant normal and no tangent leaves the lighting with a
+  zero tangent basis.
+
+The bone palette is also what pushes a uniform block past Metal's 4 KiB inline limit: 64 bytes a
+bone, so a rig of about sixty overflows. `UniformWriter` no longer truncates there, since dropping
+the tail of `g_Bones` collapses the mesh; an oversized block is bound through a buffer instead, and
+is still clamped at 64 KiB because a shader is third-party input.
+
+`MIRAGE_NO_PUPPET=1` falls back to the flat quad. Enabling it changes nothing across the twelve
+sample wallpapers, whose only puppet is hidden by default, which is why the workshop items fetched
+with SteamCMD were needed to test it at all.
+
 ### 7.5 Where to pick up
 
 In priority order, with everything needed already on disk:
@@ -712,12 +737,10 @@ In priority order, with everything needed already on disk:
    default settings, so eager compilation costs about 5%.
 2. **Performance.** This is now the largest user-visible problem: `Pixel City` still runs at about
    10 fps. The list in section 3 is unchanged and still ordered by expected impact.
-3. **Puppet warp.** `PuppetModel` parses the mesh and computes bone matrices. The renderer needs a
-   skinned vertex layout, `SKINNING` / `BONECOUNT` combos and a `g_Bones` uniform array. Its bind
-   transforms are read column-major, which no synthetic test can falsify: if the first real puppet
-   renders inside out, transpose there before looking anywhere else. The scripting layer's
-   animation stubs become real at the same time.
-4. **Rope particles**, the last unimplemented renderer feature.
+3. **Rope particles**, the last unimplemented renderer feature.
+4. **Script-driven puppet animation.** `ScriptEngine`'s animation layer stubs accept `blend` and
+   `rate` writes and drop them, so a script that plays an animation on a puppet has no effect. The
+   layer write-back machinery from section 7.3 is what this needs.
 
 ### 7.6 Audio visualiser: built
 
