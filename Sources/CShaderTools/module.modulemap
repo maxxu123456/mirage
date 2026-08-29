@@ -1,0 +1,14 @@
+module CShaderTools [system] {
+    header "shim.h"
+    link "glslang"
+    link "glslang-default-resource-limits"
+    link "spirv-cross-c"
+    link "spirv-cross-msl"
+    link "spirv-cross-glsl"
+    link "spirv-cross-hlsl"
+    link "spirv-cross-cpp"
+    link "spirv-cross-reflect"
+    link "spirv-cross-util"
+    link "spirv-cross-core"
+    export *
+}
