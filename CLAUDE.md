@@ -128,7 +128,8 @@ and ping-pong wiring), `SceneRenderer` (scene build, frame loop, present, offscr
 * **Particles**: a CPU simulation feeding `genericparticle`. Both emitter shapes, all eight
   initializers, and the ten operators the corpus uses (movement, alphafade, sizechange, the three
   oscillators, turbulence over curl noise, vortex, controlpointattract, colorchange), plus
-  sprite-sheet animation, trails, `instanceoverride`, and child systems (a raindrop's splash, a
+  sprite-sheet animation, trails, ribbons (`rope` and `ropetrail`), `instanceoverride`, and child
+  systems (a raindrop's splash, a
   firework's sparks, the glow that follows a shooting star). Verified against `Cozy, LoFi Shop`,
   whose rain now matches its preview and whose splash droplets are the children.
 * **Text layers**: CoreText rasterisation into an r8 coverage texture, fed through the normal image
@@ -167,7 +168,6 @@ Counted over the 12-wallpaper corpus, where 201 image objects render and the res
 |---|---|---|
 | **Media integration** | 1 | `mediaPlaybackChanged` is told once that nothing is playing, which is the truth, but a now-playing title, artist or album art never arrives, so a media wallpaper shows its idle layout. |
 | **Lights / `shape`** | 0 | `PerformLighting_V1` is stubbed to return black. |
-| **Rope particle renderers** | 5 of 69 | `rope` and `ropetrail` fall back to sprites; they need `genericropeparticle` and a Catmull-Rom spline. |
 
 Other limitations:
 
@@ -588,8 +588,17 @@ versions are kept outside the repo at `~/Developer/we-macos-reference/renderer-s
 Both are implemented (`Sources/MirageRender/ParticleLayer.swift`, `Sources/WEKit/ParticleModel.swift`,
 `Sources/MirageRender/TextRasterizer.swift`). What is left:
 
-* Rope renderers fall back to sprites. Real support needs the `genericropeparticle` shader, a
-  Catmull-Rom spline through the particle history and the 104 byte rope vertex layout.
+* **Ribbons** (`rope`, `ropetrail`) draw through `genericropeparticle` under `THICKFORMAT`, whose
+  no-geometry-shader branch declares exactly seven attributes in a 104 byte vertex. The shader draws
+  one flat quad per sub-segment and works out the ribbon's width itself from the neighbouring spline
+  points, so those travel with every vertex: `C1` carries the point before the segment and `C2` the
+  point after, which is what makes a join smooth rather than a crease. The Catmull-Rom subdivision is
+  therefore on the CPU. A `rope` threads one ribbon through the live particles in spawn order; a
+  `ropetrail` gives each particle its own, sampling its position on a fixed cadence
+  (`length / segments`) so the points are evenly spaced in time rather than per frame. That history
+  lives in a flat array beside the particles and is moved when the live list is compacted, or trails
+  would swap between particles as they die. The quad budget is clamped so a 16 bit index can address
+  it, with a diagnostic when that bites.
 * Particle `children` systems and audio-driven emitter rates are unimplemented.
 * Text background passes (`materials/fonts/fontbackground.json`, inflated by `padding`) are not drawn.
 * A text layer's composite targets are sized from its first rasterisation and only grow, so a layer
@@ -737,8 +746,7 @@ In priority order, with everything needed already on disk:
    default settings, so eager compilation costs about 5%.
 2. **Performance.** This is now the largest user-visible problem: `Pixel City` still runs at about
    10 fps. The list in section 3 is unchanged and still ordered by expected impact.
-3. **Rope particles**, the last unimplemented renderer feature.
-4. **Script-driven puppet animation.** `ScriptEngine`'s animation layer stubs accept `blend` and
+3. **Script-driven puppet animation.** `ScriptEngine`'s animation layer stubs accept `blend` and
    `rate` writes and drop them, so a script that plays an animation on a puppet has no effect. The
    layer write-back machinery from section 7.3 is what this needs.
 

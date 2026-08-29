@@ -51,6 +51,23 @@ public struct VertexLayout: Hashable {
         ],
         stride: 80)
 
+    /// Rope particles: see `genericropeparticle.vert` under `THICKFORMAT`, which
+    /// declares exactly these seven attributes and no others, so there is no
+    /// zero-fill slot. One quad per sub-segment, with the neighbouring spline
+    /// points travelling alongside so the shader can build the ribbon's width.
+    public static let ropeParticle = VertexLayout(
+        name: "ropeParticle",
+        attributes: [
+            Attribute(location: 0, format: .float4, offset: 0),
+            Attribute(location: 1, format: .float4, offset: 16),
+            Attribute(location: 6, format: .float4, offset: 32),
+            Attribute(location: 7, format: .float4, offset: 48),
+            Attribute(location: 8, format: .float4, offset: 64),
+            Attribute(location: 9, format: .float2, offset: 80),
+            Attribute(location: 2, format: .float4, offset: 88),
+        ],
+        stride: 104)
+
     /// Sprite particles: see `genericparticle.vert`. The shader reads the particle's
     /// rotation, size, velocity and lifetime out of the spare texcoord channels, so the
     /// layout is fixed at 80 bytes with these exact offsets.

@@ -297,12 +297,13 @@ public struct WEParticleSystem {
     public enum Renderer {
         case sprite
         case spriteTrail(length: Float, maxLength: Float, minLength: Float)
-        /// Rope renderers need a different shader and a spline; they fall back to sprites.
-        case rope(trail: Bool)
+        /// A ribbon drawn through a spline: `rope` threads one through the live
+        /// particles, `ropetrail` gives each particle its own trail.
+        case rope(trail: Bool, options: RopeOptions)
 
         public var isTrail: Bool {
             if case .spriteTrail = self { return true }
-            if case .rope(let trail) = self { return trail }
+            if case .rope(let trail, _) = self { return trail }
             return false
         }
 
@@ -317,10 +318,41 @@ public struct WEParticleSystem {
                 self = .spriteTrail(length: json["length"].float ?? 0.05,
                                     maxLength: json["maxlength"].float ?? 10,
                                     minLength: json["minlength"].float ?? 0)
-            case "rope": self = .rope(trail: false)
-            case "ropetrail": self = .rope(trail: true)
+            case "rope": self = .rope(trail: false, options: RopeOptions(json: json, trail: false))
+            case "ropetrail": self = .rope(trail: true, options: RopeOptions(json: json, trail: true))
             default: self = .sprite
             }
+        }
+    }
+
+    /// How a ribbon is built and textured.
+    public struct RopeOptions {
+        /// How many sub-segments each span of the control polyline becomes. This
+        /// is what makes the spline visible rather than a chain of straight
+        /// lines, so a plain rope subdivides and a trail usually does not.
+        public let subdivision: Int
+        /// Seconds of history a trail keeps.
+        public let length: Float
+        /// How many points that history holds.
+        public let segments: Int
+        public let uvScale: Float
+        public let uvScrolling: Bool
+        public let uvSmoothing: Bool
+        public let fadeAlpha: Bool
+        public let fadeSize: Bool
+
+        public init(json: JSON, trail: Bool) {
+            let rawSubdivision = json["subdivision"].int ?? (trail ? 1 : 4)
+            subdivision = min(32, max(1, rawSubdivision))
+            let rawLength = json["length"].float ?? 1
+            length = rawLength.isFinite && rawLength > 0 ? min(60, rawLength) : 1
+            segments = min(128, max(2, json["segments"].int ?? 4))
+            let rawScale = json["uvscale"].float ?? 1
+            uvScale = rawScale.isFinite && rawScale > 0 ? rawScale : 1
+            uvScrolling = json["uvscrolling"].bool ?? false
+            uvSmoothing = json["uvsmoothing"].bool ?? true
+            fadeAlpha = json["fadealpha"].bool ?? false
+            fadeSize = json["fadesize"].bool ?? false
         }
     }
 

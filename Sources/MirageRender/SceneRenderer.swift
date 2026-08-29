@@ -502,8 +502,12 @@ public final class SceneRenderer {
 
         var extra = layer.shaderCombos()
         for (key, value) in materialPass.combos { extra[key.uppercased()] = value }
+        // A rope draws through its own shader, with the wide vertex format its
+        // no-geometry-shader branch expects.
+        if layer.system.renderer.isRope { extra["THICKFORMAT"] = 1 }
         let spec = PassSpec(materialPass: materialPass, override: nil, binds: [], target: nil,
-                            scope: sceneScope, effectIndex: nil, shaderOverride: nil, extraCombos: extra)
+                            scope: sceneScope, effectIndex: nil,
+                            shaderOverride: layer.shaderOverride, extraCombos: extra)
         guard let pass = compile(spec: spec, objectTexture: particleTexture, note: { layer.note($0) }) else {
             diagnostics.append(contentsOf: layer.diagnostics.map { "[\(object.id)] \($0)" })
             return nil
@@ -1807,7 +1811,7 @@ public final class SceneRenderer {
         // Particle quads can be pushed outside the near plane by their own expansion.
         encoder.setDepthClipMode(.clamp)
 
-        guard let pipeline = try? context.pipeline(program: pass.program, layout: .particle,
+        guard let pipeline = try? context.pipeline(program: pass.program, layout: layer.vertexLayout,
                                                    pixelFormat: sceneTexture.pixelFormat,
                                                    blend: BlendState(mode: pass.blending, writesAlpha: false),
                                                    label: "particles.\(pass.shaderName)") else {

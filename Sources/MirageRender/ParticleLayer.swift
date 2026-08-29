@@ -18,6 +18,26 @@ struct ParticleVertex {
 }
 
 /// One live particle. Kept in a flat array and compacted in place each frame.
+/// One corner of one ribbon segment, matching `genericropeparticle` under
+/// `THICKFORMAT`: 26 floats, 104 bytes. Explicit scalars rather than SIMD so the
+/// stride is exactly that and not rounded up.
+struct RopeVertex {
+    // a_PositionVec4: the segment's start, and the ribbon's half width there.
+    var sx: Float = 0, sy: Float = 0, sz: Float = 0, sizeStart: Float = 0
+    // a_TexCoordVec4: the segment's end, and how many points the whole ribbon has.
+    var ex: Float = 0, ey: Float = 0, ez: Float = 0, trailLength: Float = 0
+    // a_TexCoordVec4C1: the point before the start, and this segment's index.
+    var px: Float = 0, py: Float = 0, pz: Float = 0, trailPosition: Float = 0
+    // a_TexCoordVec4C2: the point after the end, and the half width there.
+    var nx: Float = 0, ny: Float = 0, nz: Float = 0, sizeEnd: Float = 0
+    // a_TexCoordVec4C3: the colour at the end.
+    var er: Float = 0, eg: Float = 0, eb: Float = 0, ea: Float = 0
+    // a_TexCoordC4: which corner of the quad this is.
+    var u: Float = 0, v: Float = 0
+    // a_Color: the colour at the start.
+    var r: Float = 0, g: Float = 0, b: Float = 0, a: Float = 0
+}
+
 private struct Particle {
     var position: SIMD3<Float> = .zero
     var velocity: SIMD3<Float> = .zero
@@ -62,6 +82,17 @@ public final class ParticleLayer {
     /// child system spawns from. Cleared at the start of every update.
     private(set) var birthEvents: [SIMD3<Float>] = []
     private(set) var deathEvents: [(position: SIMD3<Float>, velocity: SIMD3<Float>)] = []
+    /// Ribbon geometry, built instead of sprite quads for a rope renderer.
+    private var ropeVertices: [RopeVertex] = []
+    /// Where each particle has been, newest first, for a trail. A flat array
+    /// rather than a field on `Particle`, moved alongside it when the live list
+    /// is compacted, or trails would swap between particles as they die.
+    private var history: [SIMD3<Float>] = []
+    private var historyCount: [Int] = []
+    private var ropeSegments = 0
+    private var historyTimer: Float = 0
+    /// How many vertices `buildGeometry` filled.
+    private(set) var vertexCount = 0
     private var vertices: [ParticleVertex] = []
     private var indices: [UInt16] = []
     private var emitterTimers: [Float]
@@ -91,13 +122,31 @@ public final class ParticleLayer {
         self.emitterTimers = Array(repeating: 0, count: system.emitters.count)
         self.emitterFired = Array(repeating: false, count: system.emitters.count)
         self.controlPoints = Array(repeating: .zero, count: 8)
+        // A ribbon needs one quad per sub-segment rather than one per particle,
+        // and the index type bounds how many that can be.
+        var quadBudget = capacity
+        if case .rope(let trail, let options) = system.renderer {
+            let spans = trail ? capacity * options.segments : max(1, capacity - 1)
+            quadBudget = max(1, spans * options.subdivision)
+            self.ropeSegments = trail ? options.segments : 0
+        }
+        let maximumQuads = Int(UInt16.max) / 4
+        let clampedQuads = min(quadBudget, maximumQuads)
         self.vertices = Array(repeating: ParticleVertex(), count: capacity * 4)
+        self.ropeVertices = system.renderer.isRope
+            ? Array(repeating: RopeVertex(), count: clampedQuads * 4) : []
+        if ropeSegments > 0 {
+            self.history = Array(repeating: .zero, count: capacity * ropeSegments)
+            self.historyCount = Array(repeating: 0, count: capacity)
+        }
         self.indices = []
-        indices.reserveCapacity(capacity * 6)
-        for i in 0..<capacity {
+        indices.reserveCapacity(clampedQuads * 6)
+        for i in 0..<clampedQuads {
             let base = UInt16(truncatingIfNeeded: i * 4)
-            guard i * 4 + 3 <= Int(UInt16.max) else { break }
             indices.append(contentsOf: [base, base + 1, base + 2, base + 2, base + 3, base])
+        }
+        if quadBudget > clampedQuads {
+            diagnostics.append("rope trimmed to \(clampedQuads) segments, the most a 16 bit index can address")
         }
         for name in system.initializers.compactMap({ if case .unsupported(let n) = $0 { return n } else { return nil } })
         where !name.isEmpty {
@@ -106,9 +155,6 @@ public final class ParticleLayer {
         for name in system.operators.compactMap({ if case .unsupported(let n) = $0 { return n } else { return nil } })
         where !name.isEmpty {
             diagnostics.append("unsupported particle operator: \(name)")
-        }
-        if system.renderer.isRope {
-            diagnostics.append("rope particle renderer falls back to sprites")
         }
     }
 
@@ -403,10 +449,16 @@ public final class ParticleLayer {
                   particle.position.z.isFinite, particle.size.isFinite,
                   particle.size > 0, particle.size <= 10_000 else { continue }
 
+            if ropeSegments > 0, write != read {
+                let from = read * ropeSegments, to = write * ropeSegments
+                for i in 0..<ropeSegments { history[to + i] = history[from + i] }
+                historyCount[write] = historyCount[read]
+            }
             particles[write] = particle
             write += 1
         }
         liveCount = write
+        if ropeSegments > 0 { recordHistory(dt: dt) }
     }
 
     private func apply(_ op: WEParticleSystem.Operator, index: Int, to particle: inout Particle,
@@ -478,7 +530,158 @@ public final class ParticleLayer {
     // MARK: Geometry
 
     /// Fills the vertex buffer and returns the index count to draw.
+    /// Pushes every live particle's position into its trail on a fixed cadence,
+    /// so a ribbon's points are evenly spaced in time rather than per frame.
+    private func recordHistory(dt: Float) {
+        guard case .rope(true, let options) = system.renderer else { return }
+        let period = max(0.001, options.length / Float(max(1, options.segments)))
+        historyTimer += dt
+        guard historyTimer >= period else { return }
+        historyTimer -= period
+        for index in 0..<liveCount {
+            let base = index * ropeSegments
+            var slot = min(historyCount[index], ropeSegments - 1)
+            while slot > 0 {
+                history[base + slot] = history[base + slot - 1]
+                slot -= 1
+            }
+            history[base] = particles[index].position
+            historyCount[index] = min(ropeSegments, historyCount[index] + 1)
+        }
+    }
+
+    /// Catmull-Rom through four points, the standard tension one half basis.
+    private func spline(_ p0: SIMD3<Float>, _ p1: SIMD3<Float>, _ p2: SIMD3<Float>,
+                        _ p3: SIMD3<Float>, _ t: Float) -> SIMD3<Float> {
+        let t2 = t * t
+        let t3 = t2 * t
+        let a: SIMD3<Float> = 2 * p1
+        let b: SIMD3<Float> = (p2 - p0) * t
+        let c: SIMD3<Float> = (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
+        let d: SIMD3<Float> = (3 * p1 - p0 - 3 * p2 + p3) * t3
+        return 0.5 * (a + b + c + d)
+    }
+
+    /// Builds one ribbon per polyline, subdividing each span along a spline.
+    ///
+    /// The shader draws a flat quad per sub-segment and works out the ribbon's
+    /// width itself from the neighbouring points, so those travel with each
+    /// vertex: C1 carries the point before the segment and C2 the point after.
+    private func buildRopeGeometry() -> Int {
+        guard case .rope(let trail, let options) = system.renderer, !ropeVertices.isEmpty else { return 0 }
+        var written = 0
+        let maxVertices = ropeVertices.count
+
+        func emit(points: [SIMD3<Float>], sizes: [Float], colors: [SIMD4<Float>]) {
+            guard points.count >= 2 else { return }
+            let subdivision = max(1, options.subdivision)
+            let spans = points.count - 1
+            let totalPoints = Float(spans * subdivision + 1)
+            var segmentIndex = 0
+            for span in 0..<spans {
+                let p0 = points[max(0, span - 1)]
+                let p1 = points[span]
+                let p2 = points[span + 1]
+                let p3 = points[min(points.count - 1, span + 2)]
+                for step in 0..<subdivision {
+                    guard written + 4 <= maxVertices else { return }
+                    let t0 = Float(step) / Float(subdivision)
+                    let t1 = Float(step + 1) / Float(subdivision)
+                    let start = spline(p0, p1, p2, p3, t0)
+                    let end = spline(p0, p1, p2, p3, t1)
+                    // One step either side, so the shader sees a smooth tangent
+                    // across the join rather than a crease at every point.
+                    let before = spline(p0, p1, p2, p3, t0 - 1 / Float(subdivision))
+                    let after = spline(p0, p1, p2, p3, t1 + 1 / Float(subdivision))
+                    let fractionStart = (Float(span) + t0) / Float(spans)
+                    let fractionEnd = (Float(span) + t1) / Float(spans)
+                    let sizeStart = interpolate(sizes, fractionStart)
+                    let sizeEnd = interpolate(sizes, fractionEnd)
+                    let colorStart = interpolate(colors, fractionStart)
+                    let colorEnd = interpolate(colors, fractionEnd)
+
+                    let corners: [(u: Float, v: Float)] = [(0, 0), (0, 1), (1, 1), (1, 0)]
+                    for corner in corners {
+                        var vertex = RopeVertex()
+                        vertex.sx = start.x; vertex.sy = start.y; vertex.sz = start.z
+                        vertex.sizeStart = sizeStart
+                        vertex.ex = end.x; vertex.ey = end.y; vertex.ez = end.z
+                        vertex.trailLength = totalPoints
+                        vertex.px = before.x; vertex.py = before.y; vertex.pz = before.z
+                        vertex.trailPosition = Float(segmentIndex)
+                        vertex.nx = after.x; vertex.ny = after.y; vertex.nz = after.z
+                        vertex.sizeEnd = sizeEnd
+                        vertex.er = colorEnd.x; vertex.eg = colorEnd.y
+                        vertex.eb = colorEnd.z; vertex.ea = colorEnd.w
+                        vertex.u = corner.u; vertex.v = corner.v
+                        vertex.r = colorStart.x; vertex.g = colorStart.y
+                        vertex.b = colorStart.z; vertex.a = colorStart.w
+                        ropeVertices[written] = vertex
+                        written += 1
+                    }
+                    segmentIndex += 1
+                }
+            }
+        }
+
+        if trail {
+            // One ribbon per particle: where it is now, then where it has been.
+            for index in 0..<liveCount {
+                let particle = particles[index]
+                let count = historyCount[index]
+                guard count >= 1 else { continue }
+                var points = [particle.position]
+                let base = index * ropeSegments
+                for i in 0..<count { points.append(history[base + i]) }
+                let color = SIMD4(particle.color, particle.alpha)
+                emit(points: points,
+                     sizes: options.fadeSize
+                         ? (0..<points.count).map { particle.size * (1 - Float($0) / Float(points.count)) }
+                         : [Float](repeating: particle.size, count: points.count),
+                     colors: options.fadeAlpha
+                         ? (0..<points.count).map {
+                             SIMD4(color.x, color.y, color.z, color.w * (1 - Float($0) / Float(points.count)))
+                           }
+                         : [SIMD4<Float>](repeating: color, count: points.count))
+            }
+        } else {
+            // One ribbon threaded through every live particle, oldest first.
+            guard liveCount >= 2 else { return 0 }
+            var points: [SIMD3<Float>] = []
+            var sizes: [Float] = []
+            var colors: [SIMD4<Float>] = []
+            points.reserveCapacity(liveCount)
+            for index in 0..<liveCount {
+                points.append(particles[index].position)
+                sizes.append(particles[index].size)
+                colors.append(SIMD4(particles[index].color, particles[index].alpha))
+            }
+            emit(points: points, sizes: sizes, colors: colors)
+        }
+        vertexCount = written
+        return written / 4 * 6
+    }
+
+    /// Samples a per-point attribute at a fraction along the polyline.
+    private func interpolate(_ values: [Float], _ fraction: Float) -> Float {
+        guard values.count > 1 else { return values.first ?? 0 }
+        let position = min(Float(values.count - 1), max(0, fraction * Float(values.count - 1)))
+        let low = Int(position)
+        let high = min(values.count - 1, low + 1)
+        return mix(values[low], values[high], t: position - Float(low))
+    }
+
+    private func interpolate(_ values: [SIMD4<Float>], _ fraction: Float) -> SIMD4<Float> {
+        guard values.count > 1 else { return values.first ?? .zero }
+        let position = min(Float(values.count - 1), max(0, fraction * Float(values.count - 1)))
+        let low = Int(position)
+        let high = min(values.count - 1, low + 1)
+        let t = position - Float(low)
+        return values[low] + (values[high] - values[low]) * t
+    }
+
     func buildGeometry() -> Int {
+        if system.renderer.isRope { return buildRopeGeometry() }
         guard liveCount > 0 else { return 0 }
         let corners: [(Float, Float)] = [(0, 1), (1, 1), (1, 0), (0, 0)]
         var vertexIndex = 0
@@ -519,11 +722,28 @@ public final class ParticleLayer {
         return min(liveCount, vertices.count / 4) * 6
     }
 
-    var vertexByteCount: Int { vertices.count * MemoryLayout<ParticleVertex>.stride }
+    var vertexByteCount: Int {
+        system.renderer.isRope
+            ? ropeVertices.count * MemoryLayout<RopeVertex>.stride
+            : vertices.count * MemoryLayout<ParticleVertex>.stride
+    }
+
+    /// Which layout and shader this system draws with.
+    var vertexLayout: VertexLayout { system.renderer.isRope ? .ropeParticle : .particle }
+    var shaderOverride: String? { system.renderer.isRope ? "genericropeparticle" : nil }
     var indexByteCount: Int { indices.count * MemoryLayout<UInt16>.stride }
 
     /// Copies the frame's geometry into the shared vertex buffer.
     func uploadVertices(into buffer: MTLBuffer, count: Int) {
+        if system.renderer.isRope {
+            let bytes = min(vertexCount * MemoryLayout<RopeVertex>.stride, buffer.length)
+            guard bytes > 0 else { return }
+            ropeVertices.withUnsafeBytes { source in
+                guard let base = source.baseAddress else { return }
+                buffer.contents().copyMemory(from: base, byteCount: bytes)
+            }
+            return
+        }
         let bytes = min(count * 4 * MemoryLayout<ParticleVertex>.stride, buffer.length)
         guard bytes > 0 else { return }
         vertices.withUnsafeBytes { source in

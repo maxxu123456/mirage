@@ -64,3 +64,11 @@ final class SpectrumTests: XCTestCase {
         XCTAssertEqual(smoother.smooth(quiet).first ?? 1, 0, accuracy: 1e-3)
     }
 }
+
+/// The rope vertex has to match what the stock shader declares, byte for byte.
+final class RopeVertexTests: XCTestCase {
+    func testStrideIsExactlyWhatTheShaderDeclares() {
+        XCTAssertEqual(MemoryLayout<RopeVertex>.stride, 104)
+        XCTAssertEqual(MemoryLayout<RopeVertex>.size, 104)
+    }
+}
