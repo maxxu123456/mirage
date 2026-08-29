@@ -8,13 +8,23 @@ import WEKit
 /// combo value and any sprite-sheet animation.
 public final class GPUTexture {
     public let name: String
-    public let texture: MTLTexture
+    /// A video texture swaps this for the decoded frame each time the scene advances,
+    /// so it is the one property that is not fixed for the texture's lifetime.
+    public internal(set) var texture: MTLTexture
     public let samplerKey: SamplerKey
     /// (gpu width, gpu height, mapped/image width, mapped/image height)
     public let resolution: SIMD4<Float>
     public let weFormat: WETextureFormat
     public let source: WETexture?
     public let isRenderTarget: Bool
+    /// Set when the texture's pixels come from an embedded video rather than a bitmap.
+    var video: VideoTexture?
+
+    /// Pulls the frame for `time` from the backing video, if there is one.
+    func advance(to time: Double) {
+        guard let video, let frame = video.texture(at: time) else { return }
+        texture = frame
+    }
 
     public init(name: String, texture: MTLTexture, samplerKey: SamplerKey, resolution: SIMD4<Float>,
                 weFormat: WETextureFormat, source: WETexture?, isRenderTarget: Bool) {
@@ -55,6 +65,7 @@ public final class TextureStore {
     private var failureSet: Set<String> = []
     private var videoTextureNames: Set<String> = []
     public private(set) var failures: [String] = []
+    private var videoBacked: [GPUTexture] = []
 
     public init(context: RenderContext, locator: AssetLocator) {
         self.context = context
@@ -82,7 +93,7 @@ public final class TextureStore {
         guard let we = try? WETexture.decode(data) else { return nil }
         if we.isVideo {
             lock.lock(); videoTextureNames.insert(name); lock.unlock()
-            return nil
+            return uploadVideo(we, name: name)
         }
         return upload(we, name: name)
     }
@@ -126,6 +137,32 @@ public final class TextureStore {
     }
 
     // MARK: Upload
+
+    /// A `TEXB0004` texture carries an MP4 in place of pixels. It is decoded on a
+    /// background queue and the current frame is swapped in as the scene advances.
+    private func uploadVideo(_ we: WETexture, name: String) -> GPUTexture? {
+        guard let data = we.videoData,
+              let video = VideoTexture(data: data, device: context.device, label: "video.\(name)") else { return nil }
+        // Start with a 1x1 placeholder so the first frames before the decoder catches up
+        // draw nothing rather than garbage.
+        guard let placeholder = solid(SIMD4(0, 0, 0, 0), name: "video.placeholder")?.texture else { return nil }
+        let size = video.size
+        let gpu = GPUTexture(name: name, texture: placeholder,
+                             samplerKey: SamplerKey(nearest: false, clamp: true, hasMips: false),
+                             resolution: SIMD4(size.x, size.y, size.x, size.y),
+                             weFormat: .argb8888, source: nil, isRenderTarget: false)
+        gpu.video = video
+        lock.lock(); videoBacked.append(gpu); lock.unlock()
+        return gpu
+    }
+
+    /// Every texture whose pixels come from a video, so the renderer can advance them.
+    public func advanceVideoTextures(to time: Double) {
+        lock.lock()
+        let backed = videoBacked
+        lock.unlock()
+        for texture in backed { texture.advance(to: time) }
+    }
 
     public func upload(_ we: WETexture, name: String) -> GPUTexture? {
         guard !we.isVideo else { return nil }   // handled by the video path

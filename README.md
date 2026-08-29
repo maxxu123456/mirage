@@ -10,8 +10,9 @@ Engine's renderer, and video, image and GIF wallpapers play natively.
 ## What it does
 
 * Renders **scene wallpapers**: layered artwork with effect chains (blur, bloom-style glows,
-  water ripples, scrolling, perspective, colour grading, and so on), sprite sheet animation,
-  blend modes, mouse parallax, and the wallpaper's own user properties.
+  water ripples, scrolling, perspective, colour grading, and so on), particle systems (rain, snow,
+  dust, fireflies), text layers, sprite sheet animation, embedded video textures, blend modes,
+  mouse parallax, and the wallpaper's own user properties.
 * Plays **video wallpapers** (`.mp4`, `.mov`, `.m4v`) with gapless looping, and **image / GIF**
   wallpapers.
 * **One wallpaper per display**, remembered across restarts.
@@ -91,14 +92,14 @@ and their effects render; these do not:
 
 | Not implemented | What you notice |
 |---|---|
-| Particles | No rain, snow, dust, fireflies or fireworks |
-| Text layers | No clocks or dates |
-| Scripts (SceneScript) | Scripted layers hold their default value instead of animating |
+| Scripts (SceneScript) | Clocks show a placeholder time instead of the real one, and scripted layers hold still |
 | Sound layers | Wallpaper sound effects stay silent |
-| Video textures | A layer whose texture is an embedded video is transparent |
 | Puppet warp | A skinned layer is drawn without its animation |
 | Audio visualiser | Audio reactive layers stay still |
 | Web wallpapers | Not supported |
+| Rope particles | Rope and rope trail emitters draw as ordinary sprites |
+
+Particles, text layers and embedded video textures now render.
 
 Very heavy wallpapers (roughly 40 layers on a 5K scene) currently render at about 10 frames per
 second. Most render comfortably at the default 30 frame cap.

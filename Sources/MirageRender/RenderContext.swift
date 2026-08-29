@@ -33,18 +33,19 @@ public struct VertexLayout: Hashable {
         ],
         stride: 20)
 
-    /// Sprite particles: see `genericparticle.vert`.
-    /// a_Position(3) | a_TexCoordVec4(4) | a_Color(4) | a_TexCoordVec4C1(4) | a_TexCoordC2(2) = 17 floats.
+    /// Sprite particles: see `genericparticle.vert`. The shader reads the particle's
+    /// rotation, size, velocity and lifetime out of the spare texcoord channels, so the
+    /// layout is fixed at 80 bytes with these exact offsets.
     public static let particle = VertexLayout(
         name: "particle",
         attributes: [
             Attribute(location: 0, format: .float3, offset: 0),    // a_Position
-            Attribute(location: 1, format: .float4, offset: 12),   // a_TexCoordVec4
-            Attribute(location: 2, format: .float4, offset: 28),   // a_Color
-            Attribute(location: 6, format: .float4, offset: 44),   // a_TexCoordVec4C1
-            Attribute(location: 7, format: .float2, offset: 60),   // a_TexCoordC2
+            Attribute(location: 1, format: .float4, offset: 16),   // a_TexCoordVec4
+            Attribute(location: 2, format: .float4, offset: 32),   // a_Color
+            Attribute(location: 6, format: .float4, offset: 48),   // a_TexCoordVec4C1
+            Attribute(location: 7, format: .float2, offset: 64),   // a_TexCoordC2
         ],
-        stride: 68)
+        stride: 80)
 }
 
 /// Buffer indices. SPIRV-Cross puts the default uniform block at buffer 0, so

@@ -80,14 +80,18 @@ com.mirage.wallpaper` resets it. Run `build/Mirage.app/Contents/MacOS/Mirage` di
 | `scripts/build-app.sh` | Bundle assembly. Set `MIRAGE_VERSION` to stamp a version. |
 | `.github/workflows/` | `ci.yml` builds, tests and assembles the bundle on every push. `release.yml` publishes a zipped `Mirage.app` when a `v*` tag is pushed. |
 
-**WEKit**: `JSON` (dynamic tree, WE stores vectors as `"1 0.5 0"` strings), `WEPackage`
+**WEKit**: `Noise` (Perlin and curl noise plus a seeded PRNG, used by particle turbulence),
+`ParticleModel` (typed `particles/*.json`), `PuppetModel` (`.mdl` meshes, bones and animations, parsed
+but not yet rendered), `JSON` (dynamic tree, WE stores vectors as `"1 0.5 0"` strings), `WEPackage`
 (`scene.pkg`), `WETexture` (`.tex` decode), `BlockCompression` (CPU BC1/2/3 fallback), `WEProject`
 (`project.json` + user properties), `DynamicValue` (`PropertyStore`, `{"user":…}` / `{"script":…}`
 bindings and a small JS-like condition evaluator), `SceneModel` (scene/objects/effects/materials/
 models), `AssetLocator` (pkg → project dir → WE assets → bundled fallback), `ShaderPreprocessor`
 (WE-GLSL → GLSL 450), `ShaderRepair` (HLSL-ism repair driven by glslang diagnostics).
 
-**MirageRender**: `ShaderCompiler` (glslang → SPIR-V → SPIRV-Cross MSL + reflection + disk cache),
+**MirageRender**: `ParticleLayer` (CPU particle simulation and its draw), `TextRasterizer` (CoreText
+to an r8 coverage texture), `VideoTexture` (`AVAssetReader` to `CVMetalTextureCache`),
+`ShaderCompiler` (glslang to SPIR-V to SPIRV-Cross MSL, plus reflection and a disk cache),
 `RenderContext` (device, pipeline/sampler caches, blit-and-present MSL), `TextureStore`
 (`WETexture` → `MTLTexture`), `RenderTargetPool`, `UniformWriter` (reflection-driven constant-buffer
 packing + matrix helpers), `SceneGeometry` (transforms, quads, projection), `ImageLayer` (pass chain
@@ -97,7 +101,8 @@ and ping-pong wiring), `SceneRenderer` (scene build, frame loop, present, offscr
 (desktop-level `NSWindow`; `SceneWallpaperView` = MTKView → `SceneRenderer`; `VideoWallpaperView` =
 `AVQueuePlayer` + `AVPlayerLooper`; `ImageWallpaperView`), `Library` (folder scanning →
 `WallpaperItem`), `WallpaperController` (per-display assignment, persistence, pause rules),
-`LibraryView`, `SettingsView`, `Settings` (+ `PowerState`).
+`LibraryView`, `SettingsView`, `Settings` (plus `PowerState`), and two subsystems that are written and
+compile but are not wired up yet: `SoundPlayer` and `WebWallpaperView`.
 
 ---
 
@@ -116,6 +121,18 @@ and ping-pong wiring), `SceneRenderer` (scene build, frame loop, present, offscr
   login, and video / image / GIF playback.
 * Texture decode: RGBA8, RGB888, DXT1/3/5 (GPU-native with a CPU fallback), RG88, R8, embedded
   PNG/JPEG, LZ4 blocks, sprite-sheet frame tables.
+* **Particles**: a CPU simulation feeding `genericparticle`. Both emitter shapes, all eight
+  initializers, and the ten operators the corpus uses (movement, alphafade, sizechange, the three
+  oscillators, turbulence over curl noise, vortex, controlpointattract, colorchange), plus
+  sprite-sheet animation, trails and `instanceoverride`. Verified against `Cozy, LoFi Shop`, whose
+  rain now matches its preview.
+* **Text layers**: CoreText rasterisation into an r8 coverage texture, fed through the normal image
+  pass chain so effects and colour blending apply. Fonts load from inside `scene.pkg`. Verified
+  against `Cozy, LoFi Shop` and `Pixel Pokemon`, where the clock and date sit where the preview puts
+  them (showing their placeholder strings until scripts are wired, see below).
+* **Video textures**: a `TEXB0004` `.tex` whose payload is an MP4 decodes on a background queue
+  through `AVAssetReader` and `CVMetalTextureCache`, and the current frame is swapped in as the
+  scene clock advances. `Pixel Pokemon`'s animated background now renders.
 
 ### Not implemented
 
@@ -123,16 +140,14 @@ Counted over the 12-wallpaper corpus, where 201 image objects render and the res
 
 | Missing | In corpus | Effect |
 |---|---|---|
-| **Particles** | 64 systems | No rain, snow, dust, fireflies, fireworks. Biggest visual gap. |
-| **Text layers** | 57 objects | No clocks or dates. |
-| **Scripts (SceneScript)** | 92 objects carry `"script"` values | Scripted values fall back to their stored default, so clocks, media-reactive and rotating layers stay static. |
-| **Sound objects** | 7 | Silent. |
-| **Video textures** | 1 (`Pixel Pokemon`'s background) | An MP4 inside a `TEXB0004` `.tex`; the layer draws transparent. |
-| **Puppet warp** (`.mdl`) | 1 | The skinned layer draws as a static quad. |
+| **Scripts (SceneScript)** | 92 objects carry `"script"` values | Scripted values hold their stored default, so clocks show a placeholder string (`12:34`) instead of the time, and media-reactive or rotating layers stay static. This is now the biggest gap: 39 of the 57 text layers are script-driven. |
+| **Sound objects** | 7 | Silent. `Sources/Mirage/SoundPlayer.swift` is written and compiles but nothing constructs it yet. |
+| **Puppet warp** (`.mdl`) | 1 | The skinned layer draws as a static quad. `Sources/WEKit/PuppetModel.swift` parses the format and computes bone matrices, but the renderer does not yet emit the `SKINNING` / `BONECOUNT` combos, the skinned vertex layout or `g_Bones`. |
 | **Bloom** (`general.bloom`) | 0 | - |
 | **Lights / `shape`** | 0 | `PerformLighting_V1` is stubbed to return black. |
-| **Web wallpapers** | - | The controller reports "not supported yet". |
-| **Audio visualiser** | - | `g_AudioSpectrum*` are zeros, so audio-reactive layers stay flat. No system-audio capture. |
+| **Web wallpapers** | - | `Sources/Mirage/WebWallpaperView.swift` is written and compiles (WKWebView plus the Wallpaper Engine JS shim) but `WallpaperController` still reports "not supported yet" instead of using it. |
+| **Audio visualiser** | - | `g_AudioSpectrum*` are zeros, so audio-reactive layers stay flat. Needs system-audio capture, which needs a screen-recording permission. |
+| **Rope particle renderers** | 5 of 69 | `rope` and `ropetrail` fall back to sprites; they need `genericropeparticle` and a Catmull-Rom spline. |
 
 Other limitations:
 
@@ -147,6 +162,8 @@ Other limitations:
 * `instance` / `instanceoverride` on *image* objects are ignored (they matter mainly for particles).
 * `camerashake`, `camerafade`, `camerapreview` are ignored, they are editor conveniences.
 * Multi-display is implemented but has only been tested on a single display.
+* Particle **child systems** (`children`) and audio-driven emitter rates are not implemented.
+* Text **background** passes (`opaquebackground`, `padding`) are not drawn; only the glyphs are.
 * `RenderContext`'s pipeline and library caches are never evicted, so memory grows slowly across
   many wallpaper switches within one session (bounded by the number of distinct shader variants used).
 
@@ -466,110 +483,31 @@ so the layout always matches the generated MSL struct.
 
 ---
 
-## 7. Specs for the work that is not done
+## 7. Remaining work
 
 Condensed from a reverse-engineering pass over linux-wallpaperengine (`lwe`, C++/OpenGL,
 authoritative) and catsout's wallpaper-scene-renderer (`wsr`, C++/Vulkan, cross-check). The long-form
 versions are kept outside the repo at `~/Developer/we-macos-reference/renderer-spec/`.
 
-### 7.1 Particles, the biggest gap
+### 7.1 Particles and text: built, with these gaps
 
-**State**: `position`, `velocity`, `acceleration`, `rotation` (radians; `.z` is the sprite roll),
-`angularVelocity`, `angularAcceleration`, `color`, `alpha`, `size` (diameter), `lifetime`, `age`,
-`alive`, the initial `color`/`alpha`/`size`/`lifetime`, and per-particle oscillator state
-(`frequency`, `scale`, `phase`) for alpha, size and each position axis. `lifePos = age / lifetime`.
+Both are implemented (`Sources/MirageRender/ParticleLayer.swift`, `Sources/WEKit/ParticleModel.swift`,
+`Sources/MirageRender/TextRasterizer.swift`). What is left:
 
-**Pool**: `count = clamp(Int(Float(maxcount) * override.count), 1, 20000)`, or `1000` when `maxcount`
-is 0. A fixed array with order-preserving compaction each frame.
+* Rope renderers fall back to sprites. Real support needs the `genericropeparticle` shader, a
+  Catmull-Rom spline through the particle history and the 104 byte rope vertex layout.
+* Particle `children` systems and audio-driven emitter rates are unimplemented.
+* Text background passes (`materials/fonts/fontbackground.json`, inflated by `padding`) are not drawn.
+* A text layer's composite targets are sized from its first rasterisation and only grow, so a layer
+  whose string gets much longer reallocates them once.
 
-**Coordinate conversion at load**: `origin.x -= W/2; origin.y = H/2 - origin.y`. Negate the `.y` of
-the emitter `origin`, box-emitter `directions`, `movement.gravity`, `velocityrandom` results,
-`turbulentvelocityrandom`'s `forward`/`right`, and `mapsequencearoundcontrolpoint` speeds.
+### 7.2 Video textures: built
 
-**Per frame**: refresh the transformed origin → update mouse-linked control points → run emitters
-(each spawn runs all initializers) → `age += dt` → reset `alpha`/`size`/`color` to their init values
-→ run operators in JSON order → compact → build vertices → draw. Clamp `dt` to 0.1 s and skip the
-first frame's update, otherwise you get a spawn burst.
+`TextureStore.uploadVideo` decodes a `TEXB0004` payload with `VideoTexture` and
+`SceneRenderer.render` calls `textures.advanceVideoTextures(to:)` each frame. Ordinary
+`type: "video"` wallpapers still use `AVPlayerLayer` in the app, which is cheaper.
 
-**Emitters**: `timer += dt * rate * override.rate; n = floor(timer); timer -= n`, capped to 1 when
-`flags & 2`; `instantaneous` fires once via a latch; honour `delay` / `duration` and the `flags & 4`
-random-periodic state machine.
-*`boxrandom`*: per axis `d = ±rand(distanceMin[a], distanceMax[a])` with a random sign, times the
-y-flipped `directions`; `position = origin + controlPoint + d`; if a speed is set,
-`velocity += normalize(d) * rand(speedMin, speedMax)`.
-*`sphererandom`*: `r = lerp(pow(rand(0,1), 1/3), distanceMin.x, distanceMax.x)`, direction from
-per-axis gaussians scaled by `directions`, then `sign` forces `+abs` / `-abs` / keep per axis.
-
-**Initializers** (JSON order): `colorrandom` (÷255, one shared `t` for R/G/B), `sizerandom`
-(`pow(t, exponent)`), `alpharandom`, `lifetimerandom`, `velocityrandom` (`+=`, y-flipped),
-`rotationrandom` (`+=`), `angularvelocityrandom` (`+=`, per-axis exponent),
-`turbulentvelocityrandom`, `mapsequencearoundcontrolpoint`. Append the `instanceoverride`
-initializer last.
-
-**Operators** (JSON order, all multiplicative onto the reset base):
-`movement` (`velocity += speed*(-2*drag*velocity + gravity)*dt; position += velocity*dt`),
-`angularmovement`, `alphafade` (`fadeintime`/`fadeouttime` as fractions of lifetime),
-`alphachange` / `sizechange` / `colorchange` (`starttime`, `endtime`, `startvalue`, `endvalue`),
-`oscillatealpha` / `oscillatesize` (`lerp((cos(freq*age + phase)+1)*0.5, scalemin, scalemax)` with
-`phase = rand(phasemin, phasemax + 2π)`), `oscillateposition`
-(`position[d] += -scale[d]*freq[d]*sin(freq[d]*age + phase[d])*dt`, skipping axes with
-`mask[d] < 0.01`), `turbulence` (curl of Perlin noise: `pos.x += phase + timescale*time`,
-`dir = normalize(CurlNoise(pos * scale * 2)) * speed`, `velocity += dir*dt`), `vortex` /
-`vortex_v2`, and `controlpointattract` (`threshold /= 2`).
-Port Perlin's 512-entry permutation table verbatim with `ease(t) = t³(t(6t−15)+10)`, vec3 offsets
-`(0,0,0)`, `(89.2,33.1,57.3)`, `(100.3,120.1,142.2)`, and `CurlNoise` with `e = 1e-4`.
-
-**Sprite vertex buffer**: 4 vertices and 6 indices per live particle, **stride 80 bytes**, offsets
-`0 float3 a_Position`, `16 float4 a_TexCoordVec4`, `32 float4 a_Color`, `48 float4 a_TexCoordVec4C1`,
-`64 float2 a_TexCoordC2`. Corner UVs go in `a_TexCoordVec4.xy` in the order
-`(0,1) (1,1) (1,0) (0,0)`; `a_TexCoordVec4.z = rotation.z`, `.w = size/2`;
-`a_Color = (color, alpha)`; `a_TexCoordVec4C1 = (velocity, lifetimeValue)`;
-`a_TexCoordC2 = (rotation.x, rotation.y)`. Indices `base+0,1,2, 2,3,0`. `lifetimeValue` is
-`lifePos * sequencemultiplier` (sequence mode) or `(frameIndex + 0.5)/numFrames` (randomframe); the
-shader applies `frac()`. Skip a particle whose position or size is non-finite, whose `size <= 0`, or
-whose `size > 10000`.
-**`VertexLayout.particle` in `RenderContext.swift` currently declares a 68-byte stride and must be
-changed to this 80-byte layout.**
-
-**Uniforms**: `g_RenderVar0 = (length, maxlength, 0, maxcount − 1)`;
-`g_RenderVar1 = (1/cols, 1/rows, frames, (atlasH/rows)/(atlasW/cols))`, or `(0,0,0, texH/texW)`
-without a sheet; `g_OrientationUp/Right/Forward = (0,1,0)/(1,0,0)/(0,0,1)`;
-`g_ViewUp/Right = (0,1,0)/(1,0,0)`; `g_EyePosition = (0,0,1000)`; `g_Brightness = overbright`;
-`g_RefractAmount = 0.05` under `REFRACT`.
-**Particles are the one place where the MVP must be real**, not identity, the vertex shader does the
-billboard expansion itself: `model = translate(origin) · parallax · rotZ(-angles.z) · rotY(angles.y)
-· rotX(-angles.x) · scale`, `mvp = viewProjection * model`.
-Combos: `THICKFORMAT=1` always, `SPRITESHEET=1` with frames, `SPRITESHEETBLEND=1` unless `flags & 2`,
-`TRAILRENDERER=1` for `spritetrail` / `ropetrail`, and shader `genericropeparticle` for ropes.
-Draw straight into the scene target, in render order, with `depthClipMode = .clamp`, binding the
-particle texture to slot 0 regardless of the shader's annotation.
-
-**Not implemented in any reference renderer, do not chase**: audio-driven emitter rate, `starttime`,
-`controlpointstartindex`, `emitter.cone`, `locktopointer`, ropetrail segment history.
-
-### 7.2 Text layers
-
-Resolve the font (`systemfont_<name>` → CoreText, else pkg → project → `assets/fonts/`), read
-`head.unitsPerEm` and `hhea.{ascender, descender, lineGap}` from the font bytes, then
-`pxPerPoint = 25/6`, `pixelSize = pointsize * pxPerPoint`,
-`lineHeight = pixelSize * (asc − desc + gap)/upem`, `ascent = pixelSize * asc/upem`. Lay out with
-CoreText (`CTTypesetterSuggestLineBreak` for `limitwidth`, `CTLineCreateTruncatedLine` for
-`limitrows` + `limituseellipsis`), rasterise into an **alpha-only `deviceGray` `CGContext`** with
-`setShouldSmoothFonts(false)`, upload as `.r8Unorm` with row 0 at the top, and set
-`g_Texture0Resolution = (w, h, w, h)`. Draw with `materials/fonts/basefont.json`
-(`g_Color4 = vec4(color, alpha)`), plus a `fontbackground` pass inflated by `padding` when
-`opaquebackground`. Position the quad exactly like an image layer, then feed it through the normal
-pass chain so `effects` and `colorBlendMode` work, 13 of the corpus's 57 text layers need that.
-Cache by `(font, pixelSize, string, wrapWidth, maxrows)`.
-
-### 7.3 Video textures and video wallpapers
-
-`WETexture.videoData` already carries the MP4 bytes from a `TEXB0004` texture. Decode with
-`AVAssetReader` (or `AVPlayer` plus `AVPlayerItemVideoOutput`) into a `CVMetalTextureCache`, loop it,
-and present the current frame as the layer's slot-0 texture. The same machinery serves
-`type: "video"` wallpapers if they ever need to be a texture rather than an `AVPlayerLayer`.
-
-### 7.4 Scripts (SceneScript)
+### 7.3 Scripts (SceneScript)
 
 One `JSContext` per wallpaper. Evaluate WE's `assets/scripts/baseclasses.js`, expose `console`,
 `shared`, `localStorage` (persisted under the workshop id), and preload `WEMath` / `WEVector` /
@@ -579,7 +517,7 @@ stripping `'use strict'` and rewriting `import` / `export`. Call `init()` once a
 each frame, using the return value as the property value. `engine` needs `frametime`, `runtime`,
 `timeOfDay`, `setTimeout`, `setInterval`; `input` needs the cursor positions.
 
-### 7.5 Sound, bloom, puppets
+### 7.4 Sound, bloom, puppets
 
 *Sound*: extract `sounds/*` to a cache directory, one `AVAudioPlayer` chain per object, `loop` and
 `random` playback modes, start after `rand(mintime, maxtime)`, effective volume
@@ -591,6 +529,33 @@ vertex shader wants `SKINNING=1`, `BONECOUNT=n`, `g_Bones[]` (`mat4x3`) and the 
 `a_BlendWeights` attributes.
 
 ---
+
+### 7.5 Where to pick up
+
+In priority order, with everything needed already on disk:
+
+1. **Wire SceneScript.** This is the single highest-value remaining item: it turns 39 placeholder
+   clocks into real ones and unblocks 92 scripted objects. A 1325 line JavaScriptCore
+   `ScriptEngine` was written but never reviewed or wired, and is parked outside the repo at
+   `~/Developer/we-macos-reference/unwired/ScriptEngine.swift`. Review it against section 7.3 and
+   move it to `Sources/WEKit/`, or write a fresh one. Then: construct one engine per
+   `SceneRenderer`, call `beginFrame` from `render`, register every `DynamicValue` that carries a
+   `script`, and consult it in `DynamicValue.resolve` (or alongside it) so a scripted value updates
+   per frame. `SceneRenderer.textSpec(for:store:)` is where a scripted clock string arrives.
+2. **Wire sound.** `WallpaperSoundPlayer` exists. Build one per wallpaper from the scene's `sound`
+   objects, drive `update(time:)` from the render loop, and connect `setPaused` / `setVolume` to
+   `WallpaperController` so the app's mute and pause rules reach it.
+3. **Wire web wallpapers.** `WebWallpaperView` exists. Replace the `case .web` branch in
+   `WallpaperController.show` that sets `lastError` with it, and feed it the project's user
+   properties.
+4. **Puppet warp.** `PuppetModel` parses the mesh and computes bone matrices. The renderer needs a
+   skinned vertex layout, `SKINNING` / `BONECOUNT` combos and a `g_Bones` uniform array.
+5. **Bloom**, then the **audio visualiser** (needs ScreenCaptureKit audio capture and the matching
+   permission), then **rope particles**.
+
+Performance is unchanged by the new features on light scenes and roughly 34 ms/frame at 1280x720 on
+`Cozy, LoFi Shop` with rain. The optimisation list in section 3 still applies and is now more
+pressing, since particles add one encoder per system per frame.
 
 ## 8. Conventions and gotchas
 

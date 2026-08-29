@@ -238,9 +238,23 @@ public final class ImageLayer {
         return SceneGeometry.effectQuad
     }
 
+    /// Text layers re-rasterise as their string changes, so the layer's texture and
+    /// size are replaced in place rather than rebuilding the whole layer.
+    func replaceTexture(_ texture: GPUTexture?, size: SIMD2<Float>) {
+        self.texture = texture
+        self.size = size
+        self.contentRatio = texture.map { $0.isAnimated ? SIMD2(1, 1) : $0.contentRatio } ?? SIMD2(1, 1)
+    }
+
     public func matrix(for pass: CompiledPass, drawsToScene: Bool) -> simd_float4x4 {
         if drawsToScene { return screenMatrix }
         if pass.isFirst { return copyMatrix }
         return matrix_identity_float4x4
     }
+}
+
+/// A drawable in scene render order: either an image layer's pass chain or a particle system.
+enum SceneLayerRef {
+    case image(ImageLayer)
+    case particle(ParticleLayer)
 }

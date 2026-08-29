@@ -187,22 +187,26 @@ case "render":
         i += 1
     }
     var frames = 1
-    if let i = rest.firstIndex(of: "--frames"), i + 1 < rest.count { frames = Int(rest[i + 1]) ?? 1 }
+    if let i = rest.firstIndex(of: "--frames"), i + 1 < rest.count { frames = max(1, Int(rest[i + 1]) ?? 1) }
     let setupStart = Date()
     let (project, locator) = makeLocator(rest[0])
     let renderer = try SceneRenderer(project: project, locator: locator)
     let setupMs = Date().timeIntervalSince(setupStart) * 1000
     print(renderer.summary)
+
+    // Simulated systems (particles, video) need several frames before they show anything,
+    // so step the clock up to `time` over `frames` steps and keep the last image.
+    let start = Date()
+    var rgba = Data()
+    for frame in 0..<frames {
+        let t = frames == 1 ? time : time * Double(frame + 1) / Double(frames)
+        rgba = try renderer.renderOffscreen(width: size.0, height: size.1, time: t)
+    }
     if frames > 1 {
-        // Warm up, then time steady-state frames.
-        _ = try renderer.renderOffscreen(width: size.0, height: size.1, time: 0)
-        let start = Date()
-        for f in 0..<frames { _ = try renderer.renderOffscreen(width: size.0, height: size.1, time: Double(f) / 60) }
         let ms = Date().timeIntervalSince(start) * 1000 / Double(frames)
         print(String(format: "setup %.0f ms, %.2f ms/frame (%.0f fps) over %d frames at %dx%d",
                      setupMs, ms, 1000 / ms, frames, size.0, size.1))
     }
-    let rgba = try renderer.renderOffscreen(width: size.0, height: size.1, time: time)
     writePNG(rgba, width: size.0, height: size.1, to: rest[1])
     print("wrote \(rest[1])")
     if !locator.unresolvedPaths.isEmpty { print("unresolved: \(locator.unresolvedPaths)") }

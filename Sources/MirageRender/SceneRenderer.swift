@@ -24,6 +24,13 @@ public final class SceneRenderer {
 
     private let sceneScope: TargetScope
     private var layers: [ImageLayer] = []
+    /// Images and particle systems in scene render order, so a particle system that sits
+    /// between two image layers is composited between them.
+    private var orderedLayers: [SceneLayerRef] = []
+    /// Text layers rasterise their string to a texture and then go through the normal
+    /// image pass chain, so effects and colour blending work on them like any other layer.
+    private var textLayers: [ObjectIdentifier: TextBinding] = [:]
+    private lazy var textRasterizer = TextRasterizer(device: context.device, locator: locator)
     private var sceneTexture: MTLTexture!
     private var scratch: [String: MTLTexture] = [:]
     private var targetsNeedingInitialClear: [MTLTexture] = []
@@ -64,6 +71,7 @@ public final class SceneRenderer {
 
         try buildSceneTargets()
         buildLayers()
+        buildParticleLayers()
         try clearInitialTargets()
     }
 
@@ -139,6 +147,13 @@ public final class SceneRenderer {
     private func buildLayers() {
         let objectsById = Dictionary(scene.objects.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         for object in renderOrder() {
+            if object.kind == .text {
+                if let layer = makeTextLayer(object: object) {
+                    layers.append(layer)
+                    orderedLayers.append(.image(layer))
+                }
+                continue
+            }
             guard object.kind == .image, let imagePath = object.imagePath else { continue }
             guard let model = locator.model(imagePath) else {
                 diagnostics.append("[\(object.id)] model not found: \(imagePath)")
@@ -159,8 +174,167 @@ public final class SceneRenderer {
             layer.relocateBlending()
             layer.wirePasses()
             layers.append(layer)
+            orderedLayers.append(.image(layer))
             diagnostics.append(contentsOf: layer.diagnostics.map { "[\(object.id)] \($0)" })
         }
+    }
+
+    /// Builds the particle systems, in the same pass over the render order as the images.
+    private func buildParticleLayers() {
+        var built: [Int: ParticleLayer] = [:]
+        for object in renderOrder() where object.kind == .particle {
+            guard let layer = makeParticleLayer(object: object) else { continue }
+            built[object.id] = layer
+        }
+        guard !built.isEmpty else { return }
+        // Splice each particle system into the ordered list at its scene position.
+        var merged: [SceneLayerRef] = []
+        var imageIndex = 0
+        for object in renderOrder() {
+            if object.kind == .particle, let layer = built[object.id] {
+                merged.append(.particle(layer))
+            } else if imageIndex < layers.count, layers[imageIndex].object.id == object.id {
+                merged.append(.image(layers[imageIndex]))
+                imageIndex += 1
+            }
+        }
+        while imageIndex < layers.count {
+            merged.append(.image(layers[imageIndex]))
+            imageIndex += 1
+        }
+        orderedLayers = merged
+    }
+
+    /// State a text layer needs between frames: what it last rendered, so a clock only
+    /// re-rasterises when the string actually changes.
+    final class TextBinding {
+        let object: WESceneObject
+        var lastKey = ""
+        init(object: WESceneObject) { self.object = object }
+    }
+
+    private func textSpec(for object: WESceneObject, store: PropertyStore?) -> TextLayerSpec {
+        let text = object.text ?? .null
+        let resolved = DynamicValue.parse(text).resolve(store).string ?? (text["value"].string ?? "")
+        return TextLayerSpec(string: resolved,
+                             fontPath: object.raw["font"].string,
+                             pointSize: object.raw["pointsize"].float ?? 32,
+                             color: object.color.resolve(store).vec3 ?? SIMD3(repeating: 1),
+                             alpha: object.alpha.resolveFloat(store, default: 1),
+                             horizontalAlign: object.raw["horizontalalign"].string ?? "center",
+                             verticalAlign: object.raw["verticalalign"].string ?? "center",
+                             maxWidth: object.raw["maxwidth"].float ?? 500,
+                             maxRows: object.raw["maxrows"].int ?? 1,
+                             limitWidth: object.raw["limitwidth"].bool ?? false,
+                             limitRows: object.raw["limitrows"].bool ?? false,
+                             useEllipsis: object.raw["limituseellipsis"].bool ?? false)
+    }
+
+    private func textKey(_ spec: TextLayerSpec) -> String {
+        "\(spec.string)|\(spec.fontPath ?? "")|\(spec.pointSize)|\(spec.maxWidth)|\(spec.maxRows)|\(spec.limitWidth)|\(spec.limitRows)|\(spec.horizontalAlign)"
+    }
+
+    private func makeTextLayer(object: WESceneObject) -> ImageLayer? {
+        let spec = textSpec(for: object, store: store)
+        guard let raster = textRasterizer.rasterize(spec) else { return nil }
+        guard let material = locator.material("materials/fonts/basefont.json"),
+              !material.passes.isEmpty else {
+            diagnostics.append("[\(object.id)] font material not found")
+            return nil
+        }
+        let model = WEModel(json: .object(["material": .string("materials/fonts/basefont.json")]))
+        let size = SIMD2(Float(raster.width), Float(raster.height))
+        let glyphs = GPUTexture(name: "text.\(object.id)", texture: raster.texture,
+                                samplerKey: SamplerKey(nearest: false, clamp: true, hasMips: false),
+                                resolution: SIMD4(size.x, size.y, size.x, size.y),
+                                weFormat: .r8, source: nil, isRenderTarget: false)
+        let scope = TargetScope(name: "text\(object.id)", parent: sceneScope)
+        // Wallpaper Engine positions text like an image, with the vertical anchor folded in.
+        var alignment = object.raw["horizontalalign"].string ?? "center"
+        if let vertical = object.raw["verticalalign"].string, vertical != "center" { alignment += vertical }
+        let layer = ImageLayer(object: object, model: model, size: size, texture: glyphs,
+                               objectScope: scope, isPassthrough: false, isFullscreen: false,
+                               alignment: alignment)
+        let w = max(1, Int(size.x.rounded())), h = max(1, Int(size.y.rounded()))
+        guard let a = makeTarget(name: "_rt_textComposite_\(object.id)_a", width: w, height: h),
+              let b = makeTarget(name: "_rt_textComposite_\(object.id)_b", width: w, height: h) else { return nil }
+        layer.compositeA = a
+        layer.compositeB = b
+        let visibleEffects = object.effects.filter { $0.visible.resolveBool(store) }
+        buildPasses(layer: layer, material: material, visibleEffects: visibleEffects)
+        layer.relocateBlending()
+        layer.wirePasses()
+        textLayers[ObjectIdentifier(layer)] = TextBinding(object: object)
+        textLayers[ObjectIdentifier(layer)]?.lastKey = textKey(spec)
+        diagnostics.append(contentsOf: layer.diagnostics.map { "[\(object.id)] \($0)" })
+        return layer
+    }
+
+    /// Re-rasterises a text layer whose string changed this frame.
+    private func refreshTextLayer(_ layer: ImageLayer) {
+        guard let binding = textLayers[ObjectIdentifier(layer)] else { return }
+        let spec = textSpec(for: binding.object, store: store)
+        guard textKey(spec) != binding.lastKey else { return }
+        binding.lastKey = textKey(spec)
+        guard let raster = textRasterizer.rasterize(spec) else { return }
+        let size = SIMD2(Float(raster.width), Float(raster.height))
+        let glyphs = GPUTexture(name: "text.\(binding.object.id)", texture: raster.texture,
+                                samplerKey: SamplerKey(nearest: false, clamp: true, hasMips: false),
+                                resolution: SIMD4(size.x, size.y, size.x, size.y),
+                                weFormat: .r8, source: nil, isRenderTarget: false)
+        layer.replaceTexture(glyphs, size: size)
+        // A longer string needs bigger composites; recreate them when it outgrows them.
+        let w = max(1, Int(size.x.rounded())), h = max(1, Int(size.y.rounded()))
+        if let existing = layer.compositeA, existing.width < w || existing.height < h {
+            if let a = makeTarget(name: "_rt_textComposite_\(binding.object.id)_a", width: w, height: h),
+               let b = makeTarget(name: "_rt_textComposite_\(binding.object.id)_b", width: w, height: h) {
+                layer.compositeA = a
+                layer.compositeB = b
+            }
+        }
+    }
+
+    private func makeParticleLayer(object: WESceneObject) -> ParticleLayer? {
+        let json: JSON
+        if let path = object.particlePath {
+            guard let loaded = locator.json(path) else {
+                diagnostics.append("[\(object.id)] particle system not found: \(path)")
+                return nil
+            }
+            json = loaded
+        } else if let inline = object.particleInline {
+            json = inline
+        } else {
+            return nil
+        }
+        guard let system = WEParticleSystem(json: json) else {
+            diagnostics.append("[\(object.id)] particle system could not be parsed")
+            return nil
+        }
+        guard let material = locator.material(system.material), let materialPass = material.passes.first else {
+            diagnostics.append("[\(object.id)] particle material not found: \(system.material)")
+            return nil
+        }
+        let layer = ParticleLayer(object: object, system: system)
+
+        // Slot 0 is always the particle texture, whatever the shader's own default says.
+        var particleTexture: GPUTexture?
+        for name in materialPass.textures.compactMap({ $0 }) where particleTexture == nil {
+            particleTexture = name.isRenderTargetName ? nil : textures.texture(named: name)
+        }
+        layer.configureSheet(with: particleTexture)
+
+        var extra = layer.shaderCombos()
+        for (key, value) in materialPass.combos { extra[key.uppercased()] = value }
+        let spec = PassSpec(materialPass: materialPass, override: nil, binds: [], target: nil,
+                            scope: sceneScope, effectIndex: nil, shaderOverride: nil, extraCombos: extra)
+        guard let pass = compile(spec: spec, objectTexture: particleTexture, note: { layer.note($0) }) else {
+            diagnostics.append(contentsOf: layer.diagnostics.map { "[\(object.id)] \($0)" })
+            return nil
+        }
+        layer.pass = pass
+        diagnostics.append(contentsOf: layer.diagnostics.map { "[\(object.id)] \($0)" })
+        return layer
     }
 
     /// `objects[]` order with `dependencies` hoisted ahead of their dependents.
@@ -337,7 +511,7 @@ public final class SceneRenderer {
         }
 
         for (index, spec) in specs.enumerated() {
-            guard let compiled = compile(spec: spec, layer: layer) else { continue }
+            guard let compiled = compile(spec: spec, objectTexture: layer.texture, note: { layer.note($0) }) else { continue }
             if let target = spec.target { layer.passTargets[layer.passes.count] = target }
             _ = index
             layer.append(compiled)
@@ -346,13 +520,13 @@ public final class SceneRenderer {
 
     // MARK: Pass compilation
 
-    private func compile(spec: PassSpec, layer: ImageLayer) -> CompiledPass? {
+    private func compile(spec: PassSpec, objectTexture: GPUTexture?, note: (String) -> Void) -> CompiledPass? {
         let shaderName = spec.shaderOverride ?? spec.materialPass.shader
         let source: ShaderProgramSource
         do {
             source = try preprocessor.load(shaderName)
         } catch {
-            layer.note("shader not found: \(shaderName)")
+            note("shader not found: \(shaderName)")
             return nil
         }
 
@@ -366,7 +540,7 @@ public final class SceneRenderer {
         }
 
         var materialCombos = spec.materialPass.combos
-        if let format = layer.texture?.weFormat {
+        if let format = objectTexture?.weFormat {
             if format == .rg88 { materialCombos["TEX0FORMAT"] = 8 }
             else if format == .r8 { materialCombos["TEX0FORMAT"] = 9 }
         }
@@ -392,7 +566,7 @@ public final class SceneRenderer {
         do {
             program = try ShaderCompiler.shared.compile(source: source, combos: combos)
         } catch {
-            layer.note("shader \(shaderName) failed: \(String(describing: error).prefix(200))")
+            note("shader \(shaderName) failed: \(String(describing: error).prefix(200))")
             return nil
         }
 
@@ -403,7 +577,7 @@ public final class SceneRenderer {
                                 cull: spec.materialPass.cullMode == "normal",
                                 combos: combos, scope: spec.scope)
         pass.effectIndex = spec.effectIndex
-        buildTextureSlots(pass: pass, spec: spec, layer: layer)
+        buildTextureSlots(pass: pass, spec: spec, note: note)
         buildConstants(pass: pass, spec: spec)
         return pass
     }
@@ -456,14 +630,14 @@ public final class SceneRenderer {
         return out
     }
 
-    private func buildTextureSlots(pass: CompiledPass, spec: PassSpec, layer: ImageLayer) {
+    private func buildTextureSlots(pass: CompiledPass, spec: PassSpec, note: (String) -> Void) {
         func prepend(_ slot: Int, _ entry: TextureSlotEntry) {
             pass.slots[slot, default: []].insert(entry, at: 0)
         }
         func entry(for name: String) -> TextureSlotEntry? {
             if name.isRenderTargetName { return .target(name) }
             guard let texture = textures.texture(named: name) else {
-                layer.note("texture not found: \(name)")
+                note("texture not found: \(name)")
                 return nil
             }
             return .asset(texture)
@@ -571,20 +745,29 @@ public final class SceneRenderer {
         let projection = SceneGeometry.sceneProjection(width: Float(sceneWidth), height: Float(sceneHeight),
                                                        nearZ: scene.camera.nearZ, farZ: scene.camera.farZ,
                                                        zoom: scene.general.zoom.resolveFloat(store, default: 1))
+        // Video-backed textures decode on their own queue; pick up their newest frame.
+        textures.advanceVideoTextures(to: safeTime)
         let objectsById = Dictionary(scene.objects.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var globals = ShaderValueBag()
         fillSceneGlobals(&globals, elapsed: elapsed, dt: dt)
 
-        for layer in layers {
-            let visible = layer.object.visible.resolveBool(store, default: true)
-            guard visible else { continue }
-            let transform = SceneGeometry.resolveTransform(of: layer.object, objects: objectsById, store: store)
-            let parallax = parallaxOffset(for: layer)
-            layer.updateGeometry(transform: transform, sceneWidth: Float(sceneWidth), sceneHeight: Float(sceneHeight),
-                                 projection: projection, parallax: parallax)
-            for pass in layer.passes {
-                encode(pass: pass, layer: layer, visible: visible, globals: globals,
-                       elapsed: elapsed, commandBuffer: commandBuffer)
+        for entry in orderedLayers {
+            switch entry {
+            case .image(let layer):
+                let visible = layer.object.visible.resolveBool(store, default: true)
+                guard visible else { continue }
+                if layer.object.kind == .text { refreshTextLayer(layer) }
+                let transform = SceneGeometry.resolveTransform(of: layer.object, objects: objectsById, store: store)
+                let parallax = parallaxOffset(for: layer.object)
+                layer.updateGeometry(transform: transform, sceneWidth: Float(sceneWidth), sceneHeight: Float(sceneHeight),
+                                     projection: projection, parallax: parallax)
+                for pass in layer.passes {
+                    encode(pass: pass, layer: layer, visible: visible, globals: globals,
+                           elapsed: elapsed, commandBuffer: commandBuffer)
+                }
+            case .particle(let layer):
+                encodeParticles(layer, globals: globals, elapsed: elapsed, dt: dt, projection: projection,
+                                objectsById: objectsById, commandBuffer: commandBuffer)
             }
         }
 
@@ -600,10 +783,10 @@ public final class SceneRenderer {
         parallaxDisplacement = simd_mix(parallaxDisplacement, target, SIMD2(repeating: delay))
     }
 
-    private func parallaxOffset(for layer: ImageLayer) -> SIMD2<Float> {
+    private func parallaxOffset(for object: WESceneObject) -> SIMD2<Float> {
         guard scene.general.cameraParallax.resolveBool(store, default: false) else { return .zero }
         let amount = scene.general.cameraParallaxAmount.resolveFloat(store, default: 1)
-        let depth = layer.object.parallaxDepth.resolve(store).vec2 ?? SIMD2(0, 0)
+        let depth = object.parallaxDepth.resolve(store).vec2 ?? SIMD2(0, 0)
         let reference = Float(sceneWidth)
         return SIMD2((depth.x + amount) * parallaxDisplacement.x * reference,
                      (depth.y + amount) * parallaxDisplacement.y * reference)
@@ -655,18 +838,18 @@ public final class SceneRenderer {
 
     // MARK: Encoding
 
-    private func texture(for surface: LayerSurface, layer: ImageLayer, scope: TargetScope) -> MTLTexture? {
+    private func texture(for surface: LayerSurface, layer: ImageLayer?, scope: TargetScope) -> MTLTexture? {
         switch surface {
-        case .objectTexture: return layer.texture?.texture
-        case .compositeA: return layer.compositeA
-        case .compositeB: return layer.compositeB
+        case .objectTexture: return layer?.texture?.texture
+        case .compositeA: return layer?.compositeA
+        case .compositeB: return layer?.compositeB
         case .named(let name): return scope.resolve(name)
         case .scene: return sceneTexture
         }
     }
 
-    private func gpuTexture(for surface: LayerSurface, layer: ImageLayer, scope: TargetScope) -> GPUTexture? {
-        if case .objectTexture = surface { return layer.texture }
+    private func gpuTexture(for surface: LayerSurface, layer: ImageLayer?, scope: TargetScope) -> GPUTexture? {
+        if case .objectTexture = surface { return layer?.texture }
         guard let texture = texture(for: surface, layer: layer, scope: scope) else { return nil }
         let identifier = ObjectIdentifier(texture)
         if let wrapper = renderTargetWrappers[identifier] { return wrapper }
@@ -870,6 +1053,126 @@ public final class SceneRenderer {
         blit.copy(from: texture, to: copy)
         blit.endEncoding()
         return copy
+    }
+
+    // MARK: Particles
+
+    /// Simulates and draws one particle system straight into the scene target.
+    ///
+    /// Particles do not go through the image pass chain: the geometry is rebuilt on the CPU
+    /// each frame and the vertex shader expands the billboards, so this is the one draw that
+    /// needs the real model and view-projection matrices.
+    private func encodeParticles(_ layer: ParticleLayer, globals: ShaderValueBag, elapsed: Float, dt: Float,
+                                 projection: simd_float4x4, objectsById: [Int: WESceneObject],
+                                 commandBuffer: MTLCommandBuffer) {
+        guard let pass = layer.pass else { return }
+        guard layer.object.visible.resolveBool(store, default: true) else { return }
+
+        let transform = SceneGeometry.resolveTransform(of: layer.object, objects: objectsById, store: store)
+        layer.update(dt: dt, time: elapsed, sceneWidth: Float(sceneWidth), sceneHeight: Float(sceneHeight),
+                     projection: projection, transform: transform,
+                     parallax: parallaxOffset(for: layer.object), pointer: pointerPosition, store: store)
+
+        let indexCount = layer.buildGeometry()
+        guard indexCount > 0 else { return }
+
+        if layer.vertexBuffer == nil {
+            layer.vertexBuffer = context.device.makeBuffer(length: max(1, layer.vertexByteCount),
+                                                           options: .storageModeShared)
+            layer.vertexBuffer?.label = "particles.\(layer.object.id).vertices"
+        }
+        if layer.indexBuffer == nil {
+            layer.indexBuffer = context.device.makeBuffer(length: max(1, layer.indexByteCount),
+                                                          options: .storageModeShared)
+            layer.indexBuffer?.label = "particles.\(layer.object.id).indices"
+            if let buffer = layer.indexBuffer { layer.uploadIndices(into: buffer) }
+        }
+        guard let vertexBuffer = layer.vertexBuffer, let indexBuffer = layer.indexBuffer else { return }
+        layer.uploadVertices(into: vertexBuffer, count: layer.liveParticleCount)
+
+        var bag = ShaderValueBag()
+        for (name, value) in pass.constants { bag.set(name, value) }
+        for (name, dynamic) in pass.boundConstants {
+            if let value = ShaderValue(json: dynamic.resolve(store)) { bag.set(name, value) }
+        }
+        bag.merge(globals)
+        // Particle brightness comes from the material's overbright constant, not the object.
+        var brightness: Float = 1
+        if case .scalar(let value)? = pass.constants["g_Overbright"] { brightness = value }
+        layer.fillUniforms(&bag, brightness: brightness)
+
+        // Slot 0 is forced to the particle texture: the shader's own annotation default
+        // (util/white) would otherwise win and every particle would be a white square.
+        var bound: [Int: GPUTexture] = [:]
+        for (slot, chain) in pass.slots {
+            for entry in chain {
+                switch entry {
+                case .asset(let texture): bound[slot] = texture
+                case .target(let name):
+                    if pass.scope.resolve(name) != nil {
+                        bound[slot] = gpuTexture(for: .named(name), layer: nil, scope: pass.scope)
+                    }
+                case .passInput: continue
+                }
+                if bound[slot] != nil { break }
+            }
+        }
+        if let texture = layer.texture { bound[0] = texture }
+        for (slot, texture) in bound {
+            bag.set("g_Texture\(slot)Resolution", .vec4(texture.resolution))
+        }
+
+        let descriptor = MTLRenderPassDescriptor.color(sceneTexture, clear: nil)
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
+        encoder.label = "particles.\(layer.object.name)"
+        encoder.setViewport(MTLViewport(originX: 0, originY: 0,
+                                        width: Double(sceneTexture.width), height: Double(sceneTexture.height),
+                                        znear: 0, zfar: 1))
+        encoder.setCullMode(.none)
+        // Particle quads can be pushed outside the near plane by their own expansion.
+        encoder.setDepthClipMode(.clamp)
+
+        guard let pipeline = try? context.pipeline(program: pass.program, layout: .particle,
+                                                   pixelFormat: sceneTexture.pixelFormat,
+                                                   blend: BlendState(mode: pass.blending, writesAlpha: false),
+                                                   label: "particles.\(pass.shaderName)") else {
+            encoder.endEncoding()
+            return
+        }
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setVertexBuffer(vertexBuffer, offset: 0, index: BufferIndex.vertices)
+        encoder.setVertexBuffer(context.zeroBuffer, offset: 0, index: BufferIndex.zeroFill)
+
+        if let writer = pass.uniformWriterVertex {
+            var bytes = [UInt8](repeating: 0, count: writer.byteCount)
+            writer.write(bag, into: &bytes)
+            bytes.withUnsafeBytes { encoder.setVertexBytes($0.baseAddress!, length: bytes.count, index: writer.block.bufferIndex) }
+        }
+        if let writer = pass.uniformWriterFragment {
+            var bytes = [UInt8](repeating: 0, count: writer.byteCount)
+            writer.write(bag, into: &bytes)
+            bytes.withUnsafeBytes { encoder.setFragmentBytes($0.baseAddress!, length: bytes.count, index: writer.block.bufferIndex) }
+        }
+
+        let fallback = textures.white
+        for binding in pass.fragmentTextureBindings {
+            let texture = bound[binding.slot] ?? fallback
+            encoder.setFragmentTexture(texture?.texture, index: binding.index)
+            encoder.setFragmentSamplerState(context.sampler(texture?.samplerKey ?? .linearClamp), index: binding.index)
+        }
+        for binding in pass.vertexTextureBindings {
+            let texture = bound[binding.slot] ?? fallback
+            encoder.setVertexTexture(texture?.texture, index: binding.index)
+            encoder.setVertexSamplerState(context.sampler(texture?.samplerKey ?? .linearClamp), index: binding.index)
+        }
+
+        encoder.drawIndexedPrimitives(type: .triangle, indexCount: indexCount, indexType: .uint16,
+                                      indexBuffer: indexBuffer, indexBufferOffset: 0)
+        encoder.endEncoding()
+
+        if debugLogging {
+            print("  [\(layer.object.id)] particles \(layer.liveParticleCount) live, \(indexCount / 6) quads, \(pass.shaderName)")
+        }
     }
 
     // MARK: Present
