@@ -77,6 +77,11 @@ struct PerformanceSettings: View {
                 Text("Scene wallpapers render at this rate. Lower is easier on the battery.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Resolution") {
+                Toggle("Render at display resolution", isOn: $settings.renderAtDisplayResolution)
+                Text("Wallpapers are drawn at the size their author chose, which is often larger than your screen. Turning this on draws them at your screen's size instead: much faster on heavy wallpapers, and slightly softer. Takes effect the next time a wallpaper loads.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }

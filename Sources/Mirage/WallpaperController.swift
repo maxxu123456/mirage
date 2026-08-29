@@ -192,6 +192,16 @@ final class WallpaperController: ObservableObject {
             let generation = (loadGeneration[displayId] ?? 0) + 1
             loadGeneration[displayId] = generation
             let fpsCap = settings.fpsCap
+            // The scene can render at the display's resolution instead of the one
+            // the wallpaper was authored at, which is much cheaper on a wallpaper
+            // authored larger than the screen, at the cost of some sharpness.
+            var outputSize: (Int, Int)?
+            if settings.renderAtDisplayResolution, let screen = screen(for: displayId) {
+                let scale = screen.backingScaleFactor
+                let pixels = (Int((screen.frame.width * scale).rounded()),
+                              Int((screen.frame.height * scale).rounded()))
+                if pixels.0 > 0, pixels.1 > 0 { outputSize = pixels }
+            }
             loaderQueue.async { [weak self] in
                 let outcome: Result<SceneRenderer, Error>
                 do {
@@ -199,7 +209,8 @@ final class WallpaperController: ObservableObject {
                     let locator = try AssetLocator(project: project,
                                                    assetsDirectories: AssetLocator.defaultAssetsDirectories(),
                                                    fallbackDirectory: ResourceLocator.fallbackAssetsDirectory())
-                    outcome = .success(try SceneRenderer(project: project, locator: locator, context: context))
+                    outcome = .success(try SceneRenderer(project: project, locator: locator, context: context,
+                                                          outputSize: outputSize))
                 } catch {
                     outcome = .failure(error)
                 }
@@ -259,6 +270,14 @@ final class WallpaperController: ObservableObject {
             self?.restoreAssignments(onlyMissing: true)
         }
         observers.append((center, displayToken))
+        // Quitting tears the views down explicitly: nothing else guarantees that
+        // a wallpaper's audio players stop before the process goes away.
+        let quitToken = center.addObserver(forName: NSApplication.willTerminateNotification,
+                                           object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            for displayId in Array(self.windows.keys) { self.teardownViews(for: displayId) }
+        }
+        observers.append((center, quitToken))
         let workspace = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didActivateApplicationNotification,
                      NSWorkspace.activeSpaceDidChangeNotification] {

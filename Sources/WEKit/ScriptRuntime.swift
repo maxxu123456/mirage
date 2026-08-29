@@ -74,6 +74,8 @@ public final class ScriptRuntime {
         // never set, and those must not be mistaken for a script's writes.
         lastSnapshot[object] = engine.layerSnapshot(named: object,
                                                     properties: ScriptRuntime.writableProperties)
+        // Seeding writes through the same setters that mark a layer dirty.
+        engine.clearDirtyLayers()
     }
 
     /// Registers one scripted value. Safe to call twice for the same value.
@@ -103,12 +105,14 @@ public final class ScriptRuntime {
         }
         // Scripts animate layers they do not drive, so their writes only exist
         // on the JavaScript objects until they are read back here.
-        if !bindings.isEmpty { publishLayerWrites() }
+        publishLayerWrites()
         collectDiagnostics()
     }
 
     private func publishLayerWrites() {
-        for object in seededObjects {
+        // Only the layers a script actually wrote to: reading every property of
+        // every object back each frame costs more than the scripts do.
+        for object in engine.takeDirtyLayers() {
             let snapshot = engine.layerSnapshot(named: object, properties: ScriptRuntime.writableProperties)
             guard !snapshot.isEmpty else { continue }
             var previous = lastSnapshot[object] ?? [:]

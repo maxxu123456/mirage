@@ -44,7 +44,7 @@ public final class WallpaperSoundPlayer {
     private final class SoundObject {
         let files: [URL]
         let mode: Mode
-        let volume: Float
+        var volume: Float
         let minTime: Double
         let maxTime: Double
         let startSilent: Bool
@@ -85,7 +85,6 @@ public final class WallpaperSoundPlayer {
     private var lastUpdateTime: Double?
     /// Set on resume so the first update after a pause can absorb the time the
     /// wallpaper clock advanced while the audio was stopped.
-    private var needsResumeShift = false
     private var cachedDirectory: URL?
     private var didResolveDirectory = false
 
@@ -143,7 +142,6 @@ public final class WallpaperSoundPlayer {
         guard !objects.isEmpty else { return }
         isRunning = true
         isPaused = false
-        needsResumeShift = false
         lastUpdateTime = nil
         for object in objects {
             object.player?.stop()
@@ -166,7 +164,6 @@ public final class WallpaperSoundPlayer {
             guard let player = object.player else { continue }
             if paused { player.pause() } else if !player.play() { object.player = nil }
         }
-        if !paused { needsResumeShift = true }
     }
 
     /// App-level volume, multiplied into every object's own volume.
@@ -180,12 +177,27 @@ public final class WallpaperSoundPlayer {
         }
     }
 
+    /// Updates the per-object volumes, in the order they were added.
+    ///
+    /// A wallpaper's sound volume is a scene value like any other: it can be
+    /// bound to a user property or driven by a script, so it is re-resolved
+    /// every frame rather than read once at load.
+    public func setObjectVolumes(_ volumes: [Float]) {
+        lock.lock()
+        defer { lock.unlock() }
+        for (index, volume) in volumes.enumerated() where index < objects.count {
+            let clamped = clamp01(volume)
+            guard objects[index].volume != clamped else { continue }
+            objects[index].volume = clamped
+            objects[index].player?.volume = storedVolume(objects[index])
+        }
+    }
+
     public func stop() {
         lock.lock()
         defer { lock.unlock() }
         isRunning = false
         isPaused = false
-        needsResumeShift = false
         lastUpdateTime = nil
         for object in objects {
             object.player?.stop()
@@ -203,19 +215,6 @@ public final class WallpaperSoundPlayer {
         lock.lock()
         defer { lock.unlock() }
         guard isRunning, !isPaused, time.isFinite else { return }
-
-        if needsResumeShift {
-            needsResumeShift = false
-            if let last = lastUpdateTime {
-                let gap = time - last
-                if gap.isFinite, gap > 0 {
-                    for object in objects {
-                        if let base = object.baseTime { object.baseTime = base + gap }
-                        object.playbackStart += gap
-                    }
-                }
-            }
-        }
 
         for object in objects { advance(object, time: time) }
         lastUpdateTime = time

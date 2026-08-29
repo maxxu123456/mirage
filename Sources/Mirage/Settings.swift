@@ -10,6 +10,12 @@ final class AppSettings: ObservableObject {
     @Published var pauseWhenIdle: Bool { didSet { store(oldValue, pauseWhenIdle, "pauseWhenIdle") } }
     @Published var idleTimeoutMinutes: Int { didSet { store(oldValue, idleTimeoutMinutes, "idleTimeoutMinutes") } }
     @Published var fpsCap: Int { didSet { store(oldValue, fpsCap, "fpsCap") } }
+    /// Render a scene at the display's resolution rather than the one it was
+    /// authored at. Off by default: it is a large speed-up on a wallpaper
+    /// authored far larger than the screen, and it visibly softens fine detail.
+    @Published var renderAtDisplayResolution: Bool {
+        didSet { store(oldValue, renderAtDisplayResolution, "renderAtDisplayResolution") }
+    }
     @Published var muted: Bool { didSet { store(oldValue, muted, "muted") } }
     @Published var volume: Double { didSet { store(oldValue, volume, "volume") } }
     @Published var launchAtLogin: Bool { didSet { applyLaunchAtLogin(oldValue) } }
@@ -24,6 +30,7 @@ final class AppSettings: ObservableObject {
             "pauseWhenIdle": false,
             "idleTimeoutMinutes": 15,
             "fpsCap": 30,
+            "renderAtDisplayResolution": false,
             "muted": true,
             "volume": 0.0,
         ])
@@ -32,6 +39,7 @@ final class AppSettings: ObservableObject {
         pauseWhenIdle = defaults.bool(forKey: "pauseWhenIdle")
         idleTimeoutMinutes = min(24 * 60, max(1, defaults.integer(forKey: "idleTimeoutMinutes")))
         fpsCap = min(240, max(1, defaults.integer(forKey: "fpsCap")))
+        renderAtDisplayResolution = defaults.bool(forKey: "renderAtDisplayResolution")
         muted = defaults.bool(forKey: "muted")
         let storedVolume = defaults.double(forKey: "volume")
         volume = storedVolume.isFinite ? min(1, max(0, storedVolume)) : 0

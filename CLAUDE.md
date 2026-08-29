@@ -54,7 +54,8 @@ ad-hoc code signature. The result runs on a Mac without Homebrew.
 .build/debug/wetool shader      "<project-dir>" genericimage2 SPRITESHEET=1 [--msl]
 .build/debug/wetool compile-all "<project-dir>"                    # every shader variant → GLSL/MSL
 .build/debug/wetool pipelines   "<project-dir>" [--verbose]        # …→ MTLRenderPipelineState
-.build/debug/wetool render      "<project-dir>" out.png --time 2 --size 1280x720 [--frames 30]
+.build/debug/wetool render      "<project-dir>" out.png --time 2 --size 1280x720 [--frames 30] [--display-res]
+.build/debug/wetool sound       "<project-dir>" [--seconds N]       # play its sound objects
 .build/debug/wetool scripts     "<project-dir>" [--frames N] [--object NAME]  # SceneScript, no Metal
 MIRAGE_DEBUG=1 .build/debug/wetool render …                        # log every encoded pass
 rm -rf ~/Library/Caches/Mirage/shaders                             # clear the shader cache
@@ -141,7 +142,8 @@ and ping-pong wiring), `SceneRenderer` (scene build, frame loop, present, offscr
   `wallpaperMouseX/Y` and a synthesised `mousemove`, `wallpaperRegisterAudioListener` gets its 128
   bins (silent, since there is no capture), and pausing holds `requestAnimationFrame` and the media.
 * **Sound**: a wallpaper's `sound` objects play, in `loop` or `random` mode, with the start delay,
-  the `startsilent` fade, and the app's mute and volume. Clips are extracted from `scene.pkg` once
+  the `startsilent` fade, the app's mute and volume, and a per-object volume that is re-resolved
+  every frame so a user property or a script can drive it. Clips are extracted from `scene.pkg` once
   into `~/Library/Caches/Mirage/audio`.
 * **Scripts (SceneScript)**: one `JSContext` per wallpaper running every `{"script": …}` value.
   All **118 scripted values** in the corpus register and run with **zero diagnostics**. Clocks and
@@ -180,30 +182,50 @@ Other limitations:
 * `RenderContext`'s pipeline and library caches are never evicted, so memory grows slowly across
   many wallpaper switches within one session (bounded by the number of distinct shader variants used).
 
-### Performance (measured, debug build, Apple Silicon, rendering at 3008×1692)
+### Performance
 
-| Wallpaper | Layers | Setup | Steady state |
-|---|---|---|---|
-| Letter | 4 | 0.09 s | 25 ms/frame (40 fps) |
-| Sunset Cat | 33 | 6.2 s cold, 0.7 s warm | 35 ms/frame (29 fps) |
-| Purple Bedroom | 35 | 0.7 s | 46 ms/frame (22 fps) |
-| Pixel City | 38 | 1.2 s | 97 ms/frame (10 fps) |
+Release build, Apple Silicon, presented at 3008x1692, measured with
+`wetool render --frames 40` (which reads the frame back only once, so the numbers are the frame
+itself). "display res" is the optional setting described below.
 
-This is **too slow** and is the main engineering problem after the missing features. Likely causes in
-order of impact:
+| Wallpaper | Layers | Scene size | Native | Display res |
+|---|---|---|---|---|
+| Letter | 6 | 3840x2160 | 22 ms (45 fps) | 18 ms (54 fps) |
+| Cozy, LoFi Shop | 20 | 3840x2160 | 63 ms (16 fps) | 50 ms (20 fps) |
+| Sunset Cat | 36 | 3840x2160 | 65 ms (15 fps) | 55 ms (18 fps) |
+| Purple Bedroom | 37 | 3840x2160 | 128 ms (8 fps) | 95 ms (11 fps) |
+| Pixel City | 38 | 5120x2160 | 183 ms (5 fps) | 121 ms (8 fps) |
 
-1. One `MTLRenderCommandEncoder` per pass, Pixel City runs roughly 90 passes per frame. Consecutive
-   passes sharing a destination should share an encoder.
-2. Every layer allocates two full-size composite targets; Pixel City's scene is 5120×2160, so the
-   working set is large and the frame is bandwidth-bound.
-3. Uniform buffers are re-packed from a dictionary for every pass every frame (`ShaderValueBag` →
-   `UniformWriter`). Cache a per-pass byte buffer and patch only what changes.
-4. Setup time is dominated by the first shader compile; the disk cache in
-   `~/Library/Caches/Mirage/shaders` makes warm starts about ten times faster.
+**This is GPU bound, not CPU bound**, which contradicts what this file used to say. `wetool render`
+reports GPU time alongside wall time, and on Pixel City the GPU accounts for 180 ms of the 183. So
+merging the per-pass command encoders, long assumed to be the first thing to fix, would buy almost
+nothing. The cost is pixels: roughly 90 passes, most of them reading and writing a full-size
+composite, on a 5120x2160 scene.
 
-The app caps at 30 fps by default, so the 22-29 ms wallpapers are usable today and Pixel City is not.
+What has been done:
 
----
+* The offscreen path no longer allocates a 20 MB target and reads it back on every frame, which was
+  most of what the old numbers in this table were measuring.
+* **Render at display resolution** (`AppSettings.renderAtDisplayResolution`, off by default;
+  `wetool render --display-res`). A wallpaper is authored at its own resolution and every pass costs
+  that many pixels no matter how large the display is. The setting scales every render target by
+  `max(outputW / sceneW, outputH / sceneH)`, capped at 1. `max`, not `min`, because `present` covers
+  the target and crops the axis whose aspect differs, so the surviving axis is the one that needs
+  the pixels. Geometry stays in scene units, so only the targets shrink. It is **off by default
+  because it is visibly softer**: every layer's composite is resampled at the smaller size and the
+  detail is gone by the time it reaches the screen, which is obvious on pixel art. Compare a crop of
+  `wetool render` with and without it before assuming it is free.
+
+What is left, in the order worth trying:
+
+1. **Fewer passes.** A pass whose material is a plain `passthrough` with no effect could be elided
+   into its consumer instead of round-tripping a full-size composite.
+2. **Smaller composites.** A layer whose content occupies a fraction of its target still pays for
+   the whole thing, and both composites are allocated for every layer whether or not the chain
+   ping-pongs.
+3. Uniform buffers are still re-packed from a dictionary for every pass every frame
+   (`ShaderValueBag` -> `UniformWriter`). This is CPU work, so it only matters once the GPU is not
+   the wall.
 
 ## 4. Wallpaper Engine formats
 
@@ -552,9 +574,18 @@ Four things about the design, each of which cost a debugging session:
   taken straight after seeding, not the seeded dictionary, because a layer object also carries
   defaults for properties the scene never set.
 
-The `JSContext` is built on the scene loader queue and then used from the render thread. That is
-safe only because the handoff is strictly ordered (the view is installed after the scene finishes
-building) and nothing touches the context concurrently. Keep it that way.
+Two things to keep in mind when changing this:
+
+* The `JSContext` is built on the scene loader queue and then used from the render thread. That is
+  safe only because the handoff is strictly ordered (the view is installed after the scene finishes
+  building) and nothing touches the context concurrently. Keep it that way.
+* **Layers are keyed by name, so two objects sharing a name share one JavaScript layer**, and a
+  script's write to it is published to both. Wallpaper Engine has the same ambiguity, since
+  `thisScene.getLayer(name)` can only return one of them.
+
+Only layers a script actually wrote to are read back: the layer objects' writable properties are
+accessors that mark the layer dirty, because reading nine properties off every object every frame
+costs more than the scripts do on a large scene.
 
 What is stubbed: no puppet animation (`getAnimationLayer` and friends answer, inertly), no media
 integration beyond a single "nothing is playing" event, no cursor events, and no execution timeout

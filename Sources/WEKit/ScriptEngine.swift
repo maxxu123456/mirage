@@ -371,6 +371,19 @@ public final class ScriptEngine {
 
     private var globalThis: JSValue? { context.globalObject }
 
+    /// Layer names a script has written to since this was last called, which it
+    /// also clears. Seeding counts as a write, so the caller clears it once
+    /// after setting a scene up.
+    public func takeDirtyLayers() -> [String] {
+        guard let value = context.evaluateScript("(function(){var k=Object.keys(globalThis.__weDirty);globalThis.__weDirty=Object.create(null);return k;})()"),
+              value.isArray, let names = value.toArray() as? [String] else { return [] }
+        return names
+    }
+
+    public func clearDirtyLayers() {
+        context.evaluateScript("globalThis.__weDirty = Object.create(null);")
+    }
+
     // MARK: Evaluation
 
     /// Runs `update(value)` and returns its result, or nil when the script did
@@ -1399,9 +1412,38 @@ extension ScriptEngine {
         };
     };
 
+    // Which layers a script has written to since the last frame was published.
+    // Reading every property of every layer back each frame would cost more than
+    // the scripts themselves on a large scene, so the writes announce themselves.
+    globalThis.__weDirty = Object.create(null);
+
+    globalThis.__weTrackWrites = function (layer, name) {
+        var keys = ['origin', 'scale', 'angles', 'size', 'alpha', 'color', 'brightness', 'visible', 'text'];
+        var values = Object.create(null);
+        for (var i = 0; i < keys.length; i++) {
+            values[keys[i]] = layer[keys[i]];
+        }
+        keys.forEach(function (key) {
+            try {
+                Object.defineProperty(layer, key, {
+                    enumerable: true,
+                    configurable: true,
+                    get: function () { return values[key]; },
+                    set: function (value) {
+                        values[key] = value;
+                        globalThis.__weDirty[String(name)] = true;
+                    }
+                });
+            } catch (e) {}
+        });
+        return layer;
+    };
+
     globalThis.__weGetLayer = function (name) {
         var key = String(name);
-        if (!globalThis.__weLayers[key]) { globalThis.__weLayers[key] = globalThis.__weMakeLayer(key); }
+        if (!globalThis.__weLayers[key]) {
+            globalThis.__weLayers[key] = globalThis.__weTrackWrites(globalThis.__weMakeLayer(key), key);
+        }
         return globalThis.__weLayers[key];
     };
 

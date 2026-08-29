@@ -104,8 +104,10 @@ and their effects render; these do not:
 Particles, text layers, embedded video textures, sound and scripts all work, so clocks show the real
 time and scripted animation runs.
 
-Very heavy wallpapers (roughly 40 layers on a 5K scene) currently render at about 10 frames per
-second. Most render comfortably at the default 30 frame cap.
+Heavy wallpapers are slow. A simple one runs at 45 frames per second, but a busy 40 layer scene
+authored at 5K manages about 5, well under the default 30 frame cap. **Settings > Performance >
+Render at display resolution** draws such a wallpaper at your screen's size instead of the much
+larger size its author chose, which is noticeably faster and slightly softer.
 
 ## Development
 

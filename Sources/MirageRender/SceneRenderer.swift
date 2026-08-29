@@ -20,6 +20,21 @@ public final class SceneRenderer {
 
     public private(set) var sceneWidth: Int
     public private(set) var sceneHeight: Int
+    /// Pixels per scene unit for every render target.
+    ///
+    /// A wallpaper is authored at its own resolution (`Pixel City` is 5120x2160)
+    /// and every pass costs that many pixels no matter how big the display is.
+    /// Geometry stays in scene units, so only the targets shrink and the image is
+    /// the same one, drawn at the size it will actually be seen at.
+    public private(set) var renderScale: Float = 1
+    public var renderWidth: Int { scaled(sceneWidth) }
+    public var renderHeight: Int { scaled(sceneHeight) }
+
+    /// A scene-unit length in target pixels, never smaller than one.
+    func scaled(_ value: Int) -> Int {
+        guard renderScale < 1 else { return value }
+        return max(1, Int((Float(value) * renderScale).rounded()))
+    }
     public private(set) var diagnostics: [String] = []
 
     private let sceneScope: TargetScope
@@ -53,8 +68,11 @@ public final class SceneRenderer {
 
     // MARK: Setup
 
+    /// `outputSize` is the size the wallpaper will be displayed at, in pixels.
+    /// Passing it lets a scene authored larger than the screen render at the
+    /// screen's resolution instead of its own.
     public init(project: WEProject, locator: AssetLocator, context: RenderContext? = nil,
-                propertyOverrides: [String: JSON] = [:]) throws {
+                propertyOverrides: [String: JSON] = [:], outputSize: (Int, Int)? = nil) throws {
         let ctx = try context ?? RenderContext()
         self.context = ctx
         self.project = project
@@ -71,6 +89,15 @@ public final class SceneRenderer {
         let size = SceneRenderer.resolveSceneSize(scene: scene, store: store)
         self.sceneWidth = size.0
         self.sceneHeight = size.1
+        if let outputSize, outputSize.0 > 0, outputSize.1 > 0 {
+            // `present` covers the target and crops the axis whose aspect differs,
+            // so the axis that survives is the one that needs the pixels: taking
+            // the larger ratio keeps that axis at native resolution, and the
+            // cropped one is only ever oversampled. Never upscale, because a
+            // scene smaller than the display is already at its texture's size.
+            let cover = max(Float(outputSize.0) / Float(size.0), Float(outputSize.1) / Float(size.1))
+            if cover.isFinite, cover > 0, cover < 1 { self.renderScale = cover }
+        }
 
         try buildSceneTargets()
         buildLayers()
@@ -98,14 +125,14 @@ public final class SceneRenderer {
     }
 
     private func buildSceneTargets() throws {
-        guard let scene = makeTarget(name: "_rt_FullFrameBuffer", width: sceneWidth, height: sceneHeight) else {
+        guard let scene = makeTarget(name: "_rt_FullFrameBuffer", width: renderWidth, height: renderHeight) else {
             throw RenderError.resourceCreation("scene framebuffer")
         }
         sceneTexture = scene
         sceneScope.register("_rt_FullFrameBuffer", scene)
         // lwe aliases the mip-mapped frame buffer to the scene target.
         sceneScope.register("_rt_MipMappedFrameBuffer", scene)
-        if let shadow = makeTarget(name: "_rt_shadowAtlas", width: sceneWidth, height: sceneHeight) {
+        if let shadow = makeTarget(name: "_rt_shadowAtlas", width: renderWidth, height: renderHeight) {
             sceneScope.register("_rt_shadowAtlas", shadow)
             sceneScope.register("_alias_lightCookie", shadow)
         }
@@ -420,7 +447,7 @@ public final class SceneRenderer {
                                isFullscreen: model.fullscreen, alignment: alignmentRaw)
         layer.missingTexture = missingTexture
 
-        let w = Int(size.x.rounded()), h = Int(size.y.rounded())
+        let w = scaled(Int(size.x.rounded())), h = scaled(Int(size.y.rounded()))
         let samplerKey = objectTexture?.samplerKey ?? .linearClamp
         if let a = makeTarget(name: "_rt_imageLayerComposite_\(object.id)_a", width: w, height: h,
                               samplerKey: samplerKey),
@@ -466,8 +493,8 @@ public final class SceneRenderer {
             for fbo in effect.fbos {
                 let scale = max(fbo.scale, 0.0001)
                 let width = layer.size.x / scale, height = layer.size.y / scale
-                let w = width.isFinite ? min(SceneRenderer.maximumRenderDimension, max(1, Int(width.rounded(.towardZero)))) : 1
-                let h = height.isFinite ? min(SceneRenderer.maximumRenderDimension, max(1, Int(height.rounded(.towardZero)))) : 1
+                let w = width.isFinite ? scaled(min(SceneRenderer.maximumRenderDimension, max(1, Int(width.rounded(.towardZero))))) : 1
+                let h = height.isFinite ? scaled(min(SceneRenderer.maximumRenderDimension, max(1, Int(height.rounded(.towardZero))))) : 1
                 if let texture = makeTarget(name: fbo.name, width: w, height: h,
                                             samplerKey: layer.texture?.samplerKey ?? .linearClamp) {
                     scope.register(fbo.name, texture)
@@ -917,9 +944,9 @@ public final class SceneRenderer {
         pointerPositionLast = pointerPosition
         let influence = scene.general.cameraParallaxMouseInfluence.resolveFloat(store, default: 1)
         bag.set("g_ParallaxPosition", SIMD2(0.5, 0.5) + (SIMD2(pointerPosition.x, -pointerPosition.y) - SIMD2(0.5, 0.5)) * influence)
-        bag.set("g_TexelSize", SIMD2(1 / Float(sceneWidth), 1 / Float(sceneHeight)))
-        bag.set("g_TexelSizeHalf", SIMD2(0.5 / Float(sceneWidth), 0.5 / Float(sceneHeight)))
-        bag.set("g_Screen", SIMD3(Float(sceneWidth), Float(sceneHeight), Float(sceneWidth) / Float(sceneHeight)))
+        bag.set("g_TexelSize", SIMD2(1 / Float(renderWidth), 1 / Float(renderHeight)))
+        bag.set("g_TexelSizeHalf", SIMD2(0.5 / Float(renderWidth), 0.5 / Float(renderHeight)))
+        bag.set("g_Screen", SIMD3(Float(renderWidth), Float(renderHeight), Float(renderWidth) / Float(renderHeight)))
         bag.set("g_TextureReductionScale", 1)
         bag.set("g_LightAmbientColor", scene.general.ambientColor.resolve(store).vec3 ?? .zero)
         bag.set("g_LightSkylightColor", scene.general.skylightColor.resolve(store).vec3 ?? .zero)
@@ -1318,7 +1345,21 @@ public final class SceneRenderer {
     // MARK: Offscreen
 
     /// Renders a single frame and returns straight-alpha RGBA8 bytes.
-    public func renderOffscreen(width: Int, height: Int, time: Double) throws -> Data {
+    /// GPU time of the last offscreen frame, in milliseconds. Wall-clock time
+    /// around a frame also contains the encode and any readback, so this is what
+    /// tells a bandwidth problem apart from an encoding one.
+    public private(set) var lastFrameGPUTime: Double = 0
+
+    private var offscreenTarget: MTLTexture?
+
+    /// Renders one frame into an offscreen texture.
+    ///
+    /// `readback` copies the result into `Data`, which costs a full-frame
+    /// GPU-to-CPU copy (20 MB at 3008x1692) and has nothing to do with how the
+    /// app draws, so a caller stepping the clock over many frames should only
+    /// ask for it on the one it keeps.
+    @discardableResult
+    public func renderOffscreen(width: Int, height: Int, time: Double, readback: Bool = true) throws -> Data {
         guard width > 0, height > 0,
               width <= SceneRenderer.maximumRenderDimension,
               height <= SceneRenderer.maximumRenderDimension,
@@ -1326,11 +1367,18 @@ public final class SceneRenderer {
               byteCount <= WEPixelLayout.maximumAllocationByteCount else {
             throw RenderError.resourceCreation("valid offscreen target dimensions")
         }
-        let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
-        desc.usage = [.renderTarget, .shaderRead]
-        desc.storageMode = .shared
-        guard let output = context.device.makeTexture(descriptor: desc) else {
-            throw RenderError.resourceCreation("offscreen target")
+        let output: MTLTexture
+        if let existing = offscreenTarget, existing.width == width, existing.height == height {
+            output = existing
+        } else {
+            let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
+            desc.usage = [.renderTarget, .shaderRead]
+            desc.storageMode = .shared
+            guard let texture = context.device.makeTexture(descriptor: desc) else {
+                throw RenderError.resourceCreation("offscreen target")
+            }
+            offscreenTarget = texture
+            output = texture
         }
         guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
             throw RenderError.resourceCreation("command buffer")
@@ -1339,6 +1387,9 @@ public final class SceneRenderer {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         if let error = commandBuffer.error { throw error }
+        let gpu = commandBuffer.gpuEndTime - commandBuffer.gpuStartTime
+        lastFrameGPUTime = gpu.isFinite && gpu > 0 ? gpu * 1000 : 0
+        guard readback else { return Data() }
 
         let bytesPerRow = byteCount / height
         var bytes = [UInt8](repeating: 0, count: byteCount)
@@ -1353,7 +1404,9 @@ public final class SceneRenderer {
 
     /// Human-readable summary of what was built, for `wetool`.
     public var summary: String {
-        var lines: [String] = ["scene \(sceneWidth)x\(sceneHeight), \(layers.count) image layers"]
+        var lines: [String] = [renderScale < 1
+            ? "scene \(sceneWidth)x\(sceneHeight) rendered at \(renderWidth)x\(renderHeight), \(layers.count) image layers"
+            : "scene \(sceneWidth)x\(sceneHeight), \(layers.count) image layers"]
         for layer in layers {
             let passNames = layer.passes.map { pass -> String in
                 let dest: String

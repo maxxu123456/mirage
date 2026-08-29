@@ -12,7 +12,7 @@ import UniformTypeIdentifiers
 //   wetool tex <project-dir> <material-name> <out.png>
 //   wetool shader <project-dir> <shader-name> [COMBO=1 ...]   (prints GLSL + MSL)
 //   wetool compile-all <project-dir>                            (compiles every shader referenced by the scene)
-//   wetool render <project-dir> <out.png> [--time t] [--size WxH]
+//   wetool render <project-dir> <out.png> [--time t] [--size WxH] [--display-res]
 //   wetool scripts <project-dir> [--frames N] [--object NAME]  (runs SceneScript with no Metal)
 //   wetool sound <project-dir> [--seconds N]                    (plays the scene's sound objects)
 
@@ -278,7 +278,7 @@ case "compile-all":
     if !locator.unresolvedPaths.isEmpty { print("unresolved: \(locator.unresolvedPaths)") }
 
 case "render":
-    guard rest.count >= 2 else { fail("usage: wetool render <dir> <out.png> [--time t] [--size WxH]") }
+    guard rest.count >= 2 else { fail("usage: wetool render <dir> <out.png> [--time t] [--size WxH] [--frames N] [--display-res]") }
     var time = 1.0
     var size = (1920, 1080)
     var i = 2
@@ -295,7 +295,10 @@ case "render":
     if let i = rest.firstIndex(of: "--frames"), i + 1 < rest.count { frames = max(1, Int(rest[i + 1]) ?? 1) }
     let setupStart = Date()
     let (project, locator) = makeLocator(rest[0])
-    let renderer = try SceneRenderer(project: project, locator: locator)
+    // Like the app, the scene renders at the resolution it was authored at unless
+    // --display-res asks for the output size instead.
+    let renderer = try SceneRenderer(project: project, locator: locator,
+                                     outputSize: rest.contains("--display-res") ? size : nil)
     let setupMs = Date().timeIntervalSince(setupStart) * 1000
     print(renderer.summary)
 
@@ -303,14 +306,21 @@ case "render":
     // so step the clock up to `time` over `frames` steps and keep the last image.
     let start = Date()
     var rgba = Data()
+    var gpuTotal = 0.0
     for frame in 0..<frames {
         let t = frames == 1 ? time : time * Double(frame + 1) / Double(frames)
-        rgba = try renderer.renderOffscreen(width: size.0, height: size.1, time: t)
+        // Only the frame that gets written needs the readback; timing the others
+        // with it would measure a 20 MB copy the app never makes.
+        let last = frame == frames - 1
+        let data = try renderer.renderOffscreen(width: size.0, height: size.1, time: t, readback: last)
+        if last { rgba = data }
+        gpuTotal += renderer.lastFrameGPUTime
     }
     if frames > 1 {
         let ms = Date().timeIntervalSince(start) * 1000 / Double(frames)
-        print(String(format: "setup %.0f ms, %.2f ms/frame (%.0f fps) over %d frames at %dx%d",
-                     setupMs, ms, 1000 / ms, frames, size.0, size.1))
+        let gpu = gpuTotal / Double(frames)
+        print(String(format: "setup %.0f ms, %.2f ms/frame (%.0f fps), gpu %.2f ms, over %d frames at %dx%d",
+                     setupMs, ms, 1000 / ms, gpu, frames, size.0, size.1))
     }
     writePNG(rgba, width: size.0, height: size.1, to: rest[1])
     print("wrote \(rest[1])")

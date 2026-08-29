@@ -47,6 +47,8 @@ final class SceneWallpaperView: MTKView {
     private var pendingPause = false
     /// The scene's `sound` objects. Nil when it has none, which is most of them.
     private var sound: WallpaperSoundPlayer?
+    /// The objects behind the sound player, so their volumes can be re-resolved.
+    private var soundObjects: [WESceneObject] = []
 
     init(renderer: SceneRenderer, context: RenderContext, muted: Bool, volume: Float) {
         self.renderer = renderer
@@ -85,6 +87,7 @@ final class SceneWallpaperView: MTKView {
         player.setVolume(volume, muted: muted)
         player.start()
         sound = player
+        soundObjects = objects
     }
 
     /// Releases the audio players. The view is torn down with the wallpaper, and
@@ -92,6 +95,7 @@ final class SceneWallpaperView: MTKView {
     func stop() {
         sound?.stop()
         sound = nil
+        soundObjects = []
     }
 
     func setMuted(_ muted: Bool, volume: Float) {
@@ -139,7 +143,10 @@ final class SceneWallpaperView: MTKView {
         guard let drawable = currentDrawable,
               let commandBuffer = renderer.context.commandQueue.makeCommandBuffer() else { return }
         let time = elapsed
-        sound?.update(time: time)
+        if let sound {
+            sound.setObjectVolumes(soundObjects.map { $0.volume.resolveFloat(renderer.store, default: 1) })
+            sound.update(time: time)
+        }
         renderer.render(into: drawable.texture, time: time, commandBuffer: commandBuffer)
         commandBuffer.present(drawable)
         commandBuffer.commit()
