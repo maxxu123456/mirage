@@ -7,6 +7,11 @@ public final class PropertyStore {
     public private(set) var values: [String: JSON] = [:]
     public var orderedProperties: [WEUserProperty]
 
+    /// This frame's script results, when a `ScriptRuntime` is driving the scene.
+    /// Held here because `DynamicValue.resolve` already takes the store, and a
+    /// scripted value has to resolve everywhere an ordinary one does.
+    public var scriptValues: ScriptValues?
+
     public init(properties: [WEUserProperty], overrides: [String: JSON] = [:]) {
         orderedProperties = properties
         for p in properties {
@@ -39,6 +44,24 @@ public final class PropertyStore {
     }
 }
 
+/// The values scripts produced this frame, keyed by `DynamicValue.scriptID`.
+///
+/// A separate object rather than a field on the store so that `PropertyStore`,
+/// which is pure data, never has to know that JavaScript exists.
+public final class ScriptValues {
+    private var values: [Int: JSON] = [:]
+
+    public init() {}
+
+    public func set(_ id: Int, _ value: JSON) { values[id] = value }
+
+    /// A script that returned nothing keeps its previous value, so entries are
+    /// only ever overwritten, never cleared between frames.
+    public func value(_ id: Int) -> JSON? { values[id] }
+
+    public func removeAll() { values.removeAll(keepingCapacity: true) }
+}
+
 /// A scene value that is either a literal or bound to a user property / script.
 public struct DynamicValue: Equatable {
     public let value: JSON
@@ -47,8 +70,31 @@ public struct DynamicValue: Equatable {
     public let script: String?
     public let scriptProperties: JSON
 
-    public init(value: JSON, user: String? = nil, condition: String? = nil, script: String? = nil, scriptProperties: JSON = .null) {
-        self.value = value; self.user = user; self.condition = condition; self.script = script; self.scriptProperties = scriptProperties
+    /// Identity for a scripted value, so the renderer can register it once and
+    /// look its result up every frame. Zero when there is no script. Two
+    /// `DynamicValue`s are still equal when only their ids differ: the id says
+    /// which copy this is, not what it means.
+    public let scriptID: Int
+
+    public init(value: JSON, user: String? = nil, condition: String? = nil, script: String? = nil,
+                scriptProperties: JSON = .null, scriptID: Int = 0) {
+        self.value = value; self.user = user; self.condition = condition; self.script = script
+        self.scriptProperties = scriptProperties
+        self.scriptID = script == nil ? 0 : (scriptID == 0 ? DynamicValue.nextScriptID() : scriptID)
+    }
+
+    public static func == (a: DynamicValue, b: DynamicValue) -> Bool {
+        a.value == b.value && a.user == b.user && a.condition == b.condition
+            && a.script == b.script && a.scriptProperties == b.scriptProperties
+    }
+
+    private static let scriptIDLock = NSLock()
+    private static var scriptIDCounter = 0
+
+    private static func nextScriptID() -> Int {
+        scriptIDLock.lock(); defer { scriptIDLock.unlock() }
+        scriptIDCounter += 1
+        return scriptIDCounter
     }
 
     public static func parse(_ json: JSON) -> DynamicValue {
@@ -75,9 +121,11 @@ public struct DynamicValue: Equatable {
 
     public var isBound: Bool { user != nil || script != nil }
 
-    /// Resolve against the property store. Script-driven values fall back to
-    /// their stored default (scripts are evaluated elsewhere).
+    /// Resolve against the property store. A scripted value takes whatever its
+    /// script produced this frame, falling back to the stored default until the
+    /// script has produced anything (or forever, when scripts are not running).
     public func resolve(_ store: PropertyStore?) -> JSON {
+        if scriptID != 0, let scripted = store?.scriptValues?.value(scriptID) { return scripted }
         guard let user, let store, let bound = store.value(user) else { return value }
         if let condition {
             return .bool(ConditionEvaluator.matches(propertyValue: bound, condition: condition, store: store, propertyName: user))

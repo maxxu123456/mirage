@@ -13,10 +13,11 @@ import UniformTypeIdentifiers
 //   wetool shader <project-dir> <shader-name> [COMBO=1 ...]   (prints GLSL + MSL)
 //   wetool compile-all <project-dir>                            (compiles every shader referenced by the scene)
 //   wetool render <project-dir> <out.png> [--time t] [--size WxH]
+//   wetool scripts <project-dir> [--frames N] [--object NAME]  (runs SceneScript with no Metal)
 
 let args = CommandLine.arguments.dropFirst()
 guard let command = args.first else {
-    print("usage: wetool <ls|info|tex|shader|compile-all|render> ...")
+    print("usage: wetool <ls|info|tex|shader|compile-all|render|pipelines|scripts> ...")
     exit(2)
 }
 
@@ -46,6 +47,16 @@ func writePNG(_ rgba: Data, width: Int, height: Int, to path: String) {
     CGImageDestinationFinalize(dest)
 }
 
+func intOption(_ args: [String], _ name: String) -> Int? {
+    guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
+    return Int(args[i + 1])
+}
+
+func stringOption(_ args: [String], _ name: String) -> String? {
+    guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
+    return args[i + 1]
+}
+
 let rest = Array(args.dropFirst())
 do {
 switch command {
@@ -72,6 +83,58 @@ case "info":
             let effects = o.effects.map { ($0.file as NSString).lastPathComponent == "effect.json" ? ($0.file as NSString).deletingLastPathComponent : $0.file }
             print("  [\(o.id)] \(o.kind) \(o.name)  image=\(o.imagePath ?? "-") particle=\(o.particlePath ?? "-") effects=\(effects)")
         }
+    }
+
+case "scripts":
+    // Runs the scripting layer on its own, with no Metal and no renderer, which is
+    // how you tell a broken script from a broken pass chain.
+    guard let dir = rest.first else { fail("usage: wetool scripts <dir> [--frames N] [--object NAME]") }
+    let frameCount = intOption(rest, "--frames") ?? 3
+    let onlyObject = stringOption(rest, "--object")
+    let (project, locator) = makeLocator(dir)
+    guard let sceneJSON = locator.json(project.file) else { fail("no scene file") }
+    let scene = WEScene(json: sceneJSON)
+    let store = PropertyStore(properties: project.properties)
+    let width = Float(scene.general.orthoWidth ?? 1920)
+    let height = Float(scene.general.orthoHeight ?? 1080)
+    let runtime = ScriptRuntime(workshopId: project.workshopId,
+                                canvasSize: SIMD2(width, height), store: store, locator: locator)
+    var scripted: [(value: DynamicValue, object: String, property: String)] = []
+    for object in scene.objects {
+        let name = object.name.isEmpty ? "object\(object.id)" : object.name
+        var values: [String: JSON] = [
+            "name": .string(object.name), "id": .number(Double(object.id)),
+            "origin": object.origin.resolve(store), "scale": object.scale.resolve(store),
+            "angles": object.angles.resolve(store), "alpha": object.alpha.resolve(store),
+            "color": object.color.resolve(store), "brightness": object.brightness.resolve(store),
+            "visible": object.visible.resolve(store), "parallaxDepth": object.parallaxDepth.resolve(store),
+        ]
+        if let size = object.size { values["size"] = size.resolve(store) }
+        if let text = object.textValue { values["text"] = text.resolve(store) }
+        runtime.seed(object: name, values: values)
+        for (property, value) in [("origin", object.origin), ("scale", object.scale), ("angles", object.angles),
+                                  ("visible", object.visible), ("alpha", object.alpha), ("color", object.color),
+                                  ("brightness", object.brightness), ("parallaxdepth", object.parallaxDepth)] {
+            if value.script != nil { scripted.append((value, name, property)) }
+        }
+        if let size = object.size, size.script != nil { scripted.append((size, name, "size")) }
+        if let text = object.textValue, text.script != nil { scripted.append((text, name, "text")) }
+    }
+    let selected = scripted.filter { onlyObject == nil || $0.object == onlyObject! }
+    for entry in selected { runtime.register(entry.value, object: entry.object, property: entry.property) }
+    print("\(selected.count) scripted values, \(runtime.boundCount) registered")
+    for frame in 0..<max(1, frameCount) {
+        runtime.beginFrame(time: Double(frame) / 60, frameTime: 1.0 / 60,
+                           dayTime: Double(SceneRenderer.dayTime()), cursor: SIMD2(0.5, 0.5))
+    }
+    for entry in selected {
+        let produced = entry.value.resolve(store)
+        let changed = produced == entry.value.value ? "unchanged" : "-> \(produced)"
+        print("  \(entry.object).\(entry.property): \(entry.value.value) \(changed)")
+    }
+    if !runtime.diagnostics.isEmpty {
+        print("diagnostics:")
+        for d in runtime.diagnostics { print("  \(d)") }
     }
 
 case "tex":
@@ -211,6 +274,7 @@ case "render":
     print("wrote \(rest[1])")
     if !locator.unresolvedPaths.isEmpty { print("unresolved: \(locator.unresolvedPaths)") }
     if !renderer.diagnostics.isEmpty { print(renderer.diagnostics.joined(separator: "\n")) }
+    if !renderer.scriptDiagnostics.isEmpty { print(renderer.scriptDiagnostics.joined(separator: "\n")) }
 
 case "pipelines":
     // Compile every shader variant a scene uses all the way to an MTLRenderPipelineState.

@@ -31,6 +31,9 @@ public final class SceneRenderer {
     /// image pass chain, so effects and colour blending work on them like any other layer.
     private var textLayers: [ObjectIdentifier: TextBinding] = [:]
     private lazy var textRasterizer = TextRasterizer(device: context.device, locator: locator)
+    /// Drives `{"script": …}` values. Nil when the wallpaper has none, so a scene
+    /// without scripts never pays for a JavaScript context.
+    private var scripts: ScriptRuntime?
     private var sceneTexture: MTLTexture!
     private var scratch: [String: MTLTexture] = [:]
     private var targetsNeedingInitialClear: [MTLTexture] = []
@@ -72,6 +75,7 @@ public final class SceneRenderer {
         try buildSceneTargets()
         buildLayers()
         buildParticleLayers()
+        buildScripts()
         try clearInitialTargets()
     }
 
@@ -215,7 +219,7 @@ public final class SceneRenderer {
 
     private func textSpec(for object: WESceneObject, store: PropertyStore?) -> TextLayerSpec {
         let text = object.text ?? .null
-        let resolved = DynamicValue.parse(text).resolve(store).string ?? (text["value"].string ?? "")
+        let resolved = object.textValue?.resolve(store).string ?? (text["value"].string ?? "")
         return TextLayerSpec(string: resolved,
                              fontPath: object.raw["font"].string,
                              pointSize: object.raw["pointsize"].float ?? 32,
@@ -718,6 +722,87 @@ public final class SceneRenderer {
         if let override = spec.override { apply(override.constantShaderValues) }
     }
 
+    /// WE's clock convention: the fraction of the day that has passed, which
+    /// feeds both `g_Daytime` and the scripts' `engine.timeOfDay`.
+    public static func dayTime() -> Float {
+        let now = Calendar.current.dateComponents([.hour, .minute], from: Date())
+        return Float((now.hour ?? 0) * 60 + (now.minute ?? 0)) / (24 * 60)
+    }
+
+    // MARK: Scripts
+
+    /// Registers every scripted value in the scene, once, at load.
+    ///
+    /// A `DynamicValue` carries its own identity (`scriptID`), so the walk only
+    /// has to reach each one; `ScriptRuntime` does the rest. The property names
+    /// are Wallpaper Engine's own, because a script addresses the value it
+    /// drives as `thisLayer.<property>`.
+    private func buildScripts() {
+        var scripted: [(value: DynamicValue, object: String, property: String)] = []
+
+        func collect(_ value: DynamicValue?, _ object: String, _ property: String) {
+            guard let value, value.script != nil else { return }
+            scripted.append((value, object, property))
+        }
+
+        for object in scene.objects {
+            let name = object.name.isEmpty ? "object\(object.id)" : object.name
+            collect(object.origin, name, "origin")
+            collect(object.scale, name, "scale")
+            collect(object.angles, name, "angles")
+            collect(object.size, name, "size")
+            collect(object.visible, name, "visible")
+            collect(object.alpha, name, "alpha")
+            collect(object.color, name, "color")
+            collect(object.brightness, name, "brightness")
+            collect(object.parallaxDepth, name, "parallaxdepth")
+            collect(object.textValue, name, "text")
+            collect(object.volume, name, "volume")
+        }
+        collect(scene.general.clearColor, "scene", "clearcolor")
+        collect(scene.general.zoom, "scene", "zoom")
+        // Shader constants driven by a script, on the object that owns the pass.
+        for layer in layers {
+            let name = layer.object.name.isEmpty ? "object\(layer.object.id)" : layer.object.name
+            for pass in layer.passes {
+                for bound in pass.boundConstants { collect(bound.value, name, bound.uniform) }
+            }
+        }
+
+        guard !scripted.isEmpty else { return }
+        let runtime = ScriptRuntime(workshopId: project.workshopId,
+                                    canvasSize: SIMD2(Float(sceneWidth), Float(sceneHeight)),
+                                    store: store, locator: locator)
+        // Every object, not just the scripted ones: a script positions itself
+        // relative to layers it does not drive.
+        for object in scene.objects {
+            let name = object.name.isEmpty ? "object\(object.id)" : object.name
+            var values: [String: JSON] = [
+                "name": .string(object.name),
+                "id": .number(Double(object.id)),
+                "origin": object.origin.resolve(store),
+                "scale": object.scale.resolve(store),
+                "angles": object.angles.resolve(store),
+                "alpha": object.alpha.resolve(store),
+                "color": object.color.resolve(store),
+                "brightness": object.brightness.resolve(store),
+                "visible": object.visible.resolve(store),
+                "parallaxDepth": object.parallaxDepth.resolve(store),
+            ]
+            if let size = object.size { values["size"] = size.resolve(store) }
+            if let text = object.textValue { values["text"] = text.resolve(store) }
+            runtime.seed(object: name, values: values)
+        }
+        for entry in scripted { runtime.register(entry.value, object: entry.object, property: entry.property) }
+        scripts = runtime
+        if runtime.boundCount < scripted.count {
+            diagnostics.append("scripts: \(runtime.boundCount) of \(scripted.count) scripted values compiled")
+        }
+    }
+
+    /// Script diagnostics, merged into the renderer's own.
+    public var scriptDiagnostics: [String] { scripts?.diagnostics ?? [] }
+
     // MARK: Frame
 
     /// Renders one frame into `target`. `time` is the wallpaper's elapsed running time
@@ -732,6 +817,11 @@ public final class SceneRenderer {
         let dt = Float(delta.isFinite ? min(0.1, max(0, delta)) : 0)
         lastTime = safeTime
         updateParallax(dt: dt)
+        // Scripts run first: every resolve below reads what they produced.
+        if let scripts {
+            scripts.beginFrame(time: safeTime, frameTime: Double(dt),
+                               dayTime: Double(SceneRenderer.dayTime()), cursor: pointerPosition)
+        }
 
         // Wallpaper Engine ignores `clearenabled` and always clears the scene target.
         let clearColor = scene.general.clearColor.resolve(store).vec3 ?? SIMD3(repeating: 1)
@@ -794,9 +884,7 @@ public final class SceneRenderer {
 
     private func fillSceneGlobals(_ bag: inout ShaderValueBag, elapsed: Float, dt: Float) {
         bag.set("g_Time", elapsed)
-        let calendar = Calendar.current
-        let now = calendar.dateComponents([.hour, .minute], from: Date())
-        let dayTime = Float((now.hour ?? 0) * 60 + (now.minute ?? 0)) / (24 * 60)
+        let dayTime = SceneRenderer.dayTime()
         bag.set("g_Daytime", dayTime)
         bag.set("g_DayTime", dayTime)
         bag.set("g_Frametime", dt)

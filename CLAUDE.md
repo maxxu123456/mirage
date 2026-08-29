@@ -14,7 +14,7 @@ user-facing version; everything else lives here.
 
 ```sh
 swift build                       # all targets
-swift test                        # 28 unit tests
+swift test                        # 43 unit tests
 ./scripts/build-app.sh            # release bundle → build/Mirage.app
 ./scripts/build-app.sh debug      # faster, for iteration
 open build/Mirage.app             # menu-bar icon appears; the library window opens
@@ -55,6 +55,7 @@ ad-hoc code signature. The result runs on a Mac without Homebrew.
 .build/debug/wetool compile-all "<project-dir>"                    # every shader variant → GLSL/MSL
 .build/debug/wetool pipelines   "<project-dir>" [--verbose]        # …→ MTLRenderPipelineState
 .build/debug/wetool render      "<project-dir>" out.png --time 2 --size 1280x720 [--frames 30]
+.build/debug/wetool scripts     "<project-dir>" [--frames N] [--object NAME]  # SceneScript, no Metal
 MIRAGE_DEBUG=1 .build/debug/wetool render …                        # log every encoded pass
 rm -rf ~/Library/Caches/Mirage/shaders                             # clear the shader cache
 ```
@@ -76,15 +77,16 @@ com.mirage.wallpaper` resets it. Run `build/Mirage.app/Contents/MacOS/Mirage` di
 | `Sources/wetool/` | Developer CLI. |
 | `Sources/CShaderTools/` | System-library shim exposing glslang's and SPIRV-Cross's C APIs to Swift. |
 | `Resources/WEAssets/` | The few WE built-ins that ship as no file at all, currently `shaders/commands/copy.{vert,frag}`, used by effect passes declared as `{"command":"copy"}`. |
-| `Tests/` | `WEKitTests` (formats, preprocessing) and `MirageRenderTests` (geometry/uniform invariants). |
+| `Tests/` | `WEKitTests` (formats, preprocessing, scripting) and `MirageRenderTests` (geometry/uniform invariants). |
 | `scripts/build-app.sh` | Bundle assembly. Set `MIRAGE_VERSION` to stamp a version. |
 | `.github/workflows/` | `ci.yml` builds, tests and assembles the bundle on every push. `release.yml` publishes a zipped `Mirage.app` when a `v*` tag is pushed. |
 
-**WEKit**: `Noise` (Perlin and curl noise plus a seeded PRNG, used by particle turbulence),
+**WEKit**: `ScriptEngine` (JavaScriptCore host for SceneScript) and `ScriptRuntime` (registration and
+per-frame evaluation), `Noise` (Perlin and curl noise plus a seeded PRNG, used by particle turbulence),
 `ParticleModel` (typed `particles/*.json`), `PuppetModel` (`.mdl` meshes, bones and animations, parsed
 but not yet rendered), `JSON` (dynamic tree, WE stores vectors as `"1 0.5 0"` strings), `WEPackage`
 (`scene.pkg`), `WETexture` (`.tex` decode), `BlockCompression` (CPU BC1/2/3 fallback), `WEProject`
-(`project.json` + user properties), `DynamicValue` (`PropertyStore`, `{"user":…}` / `{"script":…}`
+(`project.json` + user properties), `DynamicValue` (`PropertyStore`, `ScriptValues`, `{"user":…}` / `{"script":…}`
 bindings and a small JS-like condition evaluator), `SceneModel` (scene/objects/effects/materials/
 models), `AssetLocator` (pkg → project dir → WE assets → bundled fallback), `ShaderPreprocessor`
 (WE-GLSL → GLSL 450), `ShaderRepair` (HLSL-ism repair driven by glslang diagnostics).
@@ -133,6 +135,11 @@ compile but are not wired up yet: `SoundPlayer` and `WebWallpaperView`.
 * **Video textures**: a `TEXB0004` `.tex` whose payload is an MP4 decodes on a background queue
   through `AVAssetReader` and `CVMetalTextureCache`, and the current frame is swapped in as the
   scene clock advances. `Pixel Pokemon`'s animated background now renders.
+* **Scripts (SceneScript)**: one `JSContext` per wallpaper running every `{"script": …}` value.
+  All **118 scripted values** in the corpus register and run with **zero diagnostics**. Clocks and
+  dates show the real time, the Zelda wallpaper's day/night cycle follows the system clock, and
+  scripted transforms, colours and visibility animate. Verified against `Pixel Pokemon`,
+  `Cozy, LoFi Shop`, `4k Outset Island` and `Spring City`.
 
 ### Not implemented
 
@@ -140,8 +147,8 @@ Counted over the 12-wallpaper corpus, where 201 image objects render and the res
 
 | Missing | In corpus | Effect |
 |---|---|---|
-| **Scripts (SceneScript)** | 92 objects carry `"script"` values | Scripted values hold their stored default, so clocks show a placeholder string (`12:34`) instead of the time, and media-reactive or rotating layers stay static. This is now the biggest gap: 39 of the 57 text layers are script-driven. |
-| **Sound objects** | 7 | Silent. `Sources/Mirage/SoundPlayer.swift` is written and compiles but nothing constructs it yet. |
+| **Media integration** | 1 | `mediaPlaybackChanged` is told once that nothing is playing, which is the truth, but a now-playing title, artist or album art never arrives, so a media wallpaper shows its idle layout. |
+| **Sound objects** | 7 | Silent. `Sources/Mirage/SoundPlayer.swift` is written and compiles but nothing constructs it yet. This is now the biggest gap. |
 | **Puppet warp** (`.mdl`) | 1 | The skinned layer draws as a static quad. `Sources/WEKit/PuppetModel.swift` parses the format and computes bone matrices, but the renderer does not yet emit the `SKINNING` / `BONECOUNT` combos, the skinned vertex layout or `g_Bones`. |
 | **Bloom** (`general.bloom`) | 0 | - |
 | **Lights / `shape`** | 0 | `PerformLighting_V1` is stubbed to return black. |
@@ -512,15 +519,33 @@ pixel format describes memory layout and sampling still returns RGBA (verified a
 `Pixel Pokemon`'s palette, not just reasoned about); and the initialiser blocks on track loading, so
 it must stay on the scene-loading queue and off the main thread.
 
-### 7.3 Scripts (SceneScript)
+### 7.3 Scripts: built
 
-One `JSContext` per wallpaper. Evaluate WE's `assets/scripts/baseclasses.js`, expose `console`,
-`shared`, `localStorage` (persisted under the workshop id), and preload `WEMath` / `WEVector` /
-`WEColor` from `assets/scripts/jsmodules/`. Each script becomes a closure
-`(function(__exports, thisLayer, thisObject, thisScene, engine, input, scriptProperties){…})` after
-stripping `'use strict'` and rewriting `import` / `export`. Call `init()` once and `update(value)`
-each frame, using the return value as the property value. `engine` needs `frametime`, `runtime`,
-`timeOfDay`, `setTimeout`, `setInterval`; `input` needs the cursor positions.
+`ScriptEngine` (JavaScriptCore) runs the JavaScript; `ScriptRuntime` does the bookkeeping around it;
+`DynamicValue` carries a `scriptID` so a scripted value can be registered once and looked up every
+frame; `SceneRenderer.buildScripts()` walks the scene and `render` drives one `beginFrame`.
+
+Four things about the design, each of which cost a debugging session:
+
+* **Evaluate once per frame, up front, not lazily from `resolve`.** A scene value is resolved
+  several times a frame (geometry, uniforms, the text rasteriser) and `update()` must run once.
+  `ScriptRuntime.beginFrame` evaluates every handle and publishes into `ScriptValues`.
+* **`update(value)` receives its own previous result**, not the stored default. That is what makes
+  `return value + engine.frametime * speed` accumulate, which is how every rotating layer works.
+  The caller keeps passing the stored default; the engine ignores it once the script has moved on.
+* **`applyUserProperties` is not optional.** Real scripts do their layout there and leave `init`
+  to look up layers, so a script that never receives it runs `update` against undefined state and
+  throws on the first frame. WE's order is `init`, then the properties, then the first update.
+* **Layer objects are seeded with the scene's real values** before anything registers, because a
+  script reads the layer it drives and its neighbours (`thisScene.getLayer("x").origin`).
+
+What is stubbed: no puppet animation (`getAnimationLayer` and friends answer, inertly), no media
+integration beyond a single "nothing is playing" event, no cursor events, and no execution timeout
+(JSC's is private API), so a runaway script would hang the render thread. Scripts that throw are
+disabled after five failures.
+
+`wetool scripts <dir> [--frames N] [--object NAME]` runs the whole scripting layer with no Metal and
+no renderer, which is how you tell a broken script from a broken pass chain.
 
 ### 7.4 Sound, bloom, puppets
 
@@ -539,43 +564,28 @@ vertex shader wants `SKINNING=1`, `BONECOUNT=n`, `g_Bones[]` (`mat4x3`) and the 
 
 In priority order, with everything needed already on disk:
 
-1. **Wire SceneScript.** This is the single highest-value remaining item: it turns 39 placeholder
-   clocks into real ones and unblocks 92 scripted objects. A JavaScriptCore `ScriptEngine` is
-   written but not in the repo, parked at
-   `~/Developer/we-macos-reference/unwired/ScriptEngine.swift`. Its author reports all 77 distinct
-   corpus scripts registering, 55 of them producing a value, and 0.33 ms/frame for all 77 in a debug
-   build, but none of that was checked here. Review it against section 7.3, then move it to
-   `Sources/WEKit/`. Wiring: one engine per `SceneRenderer`, `beginFrame` from `render`, register
-   every `DynamicValue` that carries a `script`, and consult it in `DynamicValue.resolve` so a
-   scripted value updates per frame. `SceneRenderer.textSpec(for:store:)` is where a scripted clock
-   string arrives. Four things its API demands:
-   * `evaluate` takes the **stored default** as `current`, not its own last result, or a script like
-     `return value * 2` compounds every frame.
-   * `nil` from `evaluate` means "nothing new", not failure. Keep the previous value.
-   * Call `setUserProperties` **before** `register`; bound script properties resolve once, at
-     registration.
-   * `JSContext` is not thread safe, so all of it belongs on the render thread. There is no
-     execution timeout either (JSC's is private API), so a runaway script hangs that thread.
-2. **Wire sound.** `WallpaperSoundPlayer` exists. Build one per wallpaper from the scene's `sound`
+1. **Wire sound.** `WallpaperSoundPlayer` exists. Build one per wallpaper from the scene's `sound`
    objects, drive `update(time:)` from the render loop with the same clock the renderer gets, and
    connect `setPaused` / `setVolume` to `WallpaperController` so the app's mute and pause rules reach
    it. Note `WESceneObject` parses only `playbackmode` and `volume`, so `mintime` / `maxtime` /
    `startsilent` have to come out of `object.raw` or be added to `SceneModel`.
-3. **Wire web wallpapers.** `WebWallpaperView` exists. Replace the `case .web` branch in
+2. **Wire web wallpapers.** `WebWallpaperView` exists. Replace the `case .web` branch in
    `WallpaperController.show` that sets `lastError` with it, and feed it the project's user
    properties as plain `Any` values, unwrapped (the view wraps them itself). It has no per-frame
    hook, so `updatePointer` needs a timer, and `teardownViews(for:)` must call `stop()` the way it
    does for video.
+3. **Performance.** This is now the largest user-visible problem: `Pixel City` still runs at about
+   10 fps. The list in section 3 is unchanged and still ordered by expected impact.
 4. **Puppet warp.** `PuppetModel` parses the mesh and computes bone matrices. The renderer needs a
    skinned vertex layout, `SKINNING` / `BONECOUNT` combos and a `g_Bones` uniform array. Its bind
    transforms are read column-major, which no synthetic test can falsify: if the first real puppet
-   renders inside out, transpose there before looking anywhere else.
-5. **Bloom**, then the **audio visualiser** (needs ScreenCaptureKit audio capture and the matching
+   renders inside out, transpose there before looking anywhere else. The scripting layer's
+   animation stubs become real at the same time.
+5. **Live property edits.** `PropertyStore` drives bindings already, and
+   `ScriptRuntime.userPropertiesChanged` re-delivers them to scripts, but nothing calls it: the
+   settings UI still lists properties instead of offering controls.
+6. **Bloom**, then the **audio visualiser** (needs ScreenCaptureKit audio capture and the matching
    permission), then **rope particles**.
-
-Performance is unchanged by the new features on light scenes and roughly 34 ms/frame at 1280x720 on
-`Cozy, LoFi Shop` with rain. The optimisation list in section 3 still applies and is now more
-pressing, since particles add one encoder per system per frame.
 
 ## 8. Conventions and gotchas
 

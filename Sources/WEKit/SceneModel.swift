@@ -143,6 +143,8 @@ public struct WESceneObject: Identifiable {
     public let particleInline: JSON?
     public let sounds: [String]
     public let text: JSON?
+    /// `text` parsed once, so a scripted string keeps one identity across frames.
+    public let textValue: DynamicValue?
 
     public let origin: DynamicValue
     public let scale: DynamicValue
@@ -181,6 +183,7 @@ public struct WESceneObject: Identifiable {
         }
         sounds = (json["sound"].array ?? []).compactMap(\.string)
         text = json["text"].isNull ? nil : json["text"]
+        textValue = text.map(DynamicValue.parse)
         if imagePath != nil { kind = .image }
         else if particlePath != nil || particleInline != nil { kind = .particle }
         else if !sounds.isEmpty { kind = .sound }
