@@ -118,7 +118,28 @@ public final class SceneRenderer {
     public var pointerPosition = SIMD2<Float>(0.5, 0.5)
     private var pointerPositionLast = SIMD2<Float>(0.5, 0.5)
     /// Audio spectrum, 64 bins; the 16/32 bin uniforms are derived from it.
-    public var audioSpectrum = [Float](repeating: 0, count: 64)
+    /// The system audio spectrum, 64 bands per channel with index 0 lowest,
+    /// which is Wallpaper Engine's own contract. The 32 and 16 wide forms the
+    /// shaders also declare are averaged down from these.
+    public private(set) var audioSpectrumLeft = [Float](repeating: 0, count: 64)
+    public private(set) var audioSpectrumRight = [Float](repeating: 0, count: 64)
+    private var derivedSpectrum: (l16: [Float], r16: [Float], l32: [Float], r32: [Float])?
+    /// Whether any shader in this scene actually reads the spectrum, so the app
+    /// only asks for the audio permission on a wallpaper that uses it.
+    public private(set) var usesAudioSpectrum = false
+
+    public func setAudioSpectrum(left: [Float], right: [Float]) {
+        func shaped(_ values: [Float]) -> [Float] {
+            var out = [Float](repeating: 0, count: 64)
+            for i in 0..<min(64, values.count) where values[i].isFinite {
+                out[i] = min(1, max(0, values[i]))
+            }
+            return out
+        }
+        audioSpectrumLeft = shaped(left)
+        audioSpectrumRight = shaped(right)
+        derivedSpectrum = nil
+    }
 
     // MARK: Setup
 
@@ -182,6 +203,7 @@ public final class SceneRenderer {
         buildParticleLayers()
         buildBloomLayer()
         buildScripts()
+        usesAudioSpectrum = SceneRenderer.readsAudio(layers)
         try clearInitialTargets()
     }
 
@@ -589,24 +611,25 @@ public final class SceneRenderer {
         // another vanish, and a missing layer is worse than the flat quad this
         // renderer has always drawn. See section 7.4.
         guard SceneRenderer.puppetMeshEnabled else { return }
-        // The file's own 52 byte vertex, uploaded as it is stored, except that
-        // the texture coordinates are scaled into the padded texture the way the
-        // quad path scales its own. A mesh sampling raw content coordinates out
-        // of a power-of-two padded store reads the wrong corner of it entirely.
+        // Pack the parsed vertex and scale its texture coordinates into the
+        // padded texture the way the quad path scales its own. A mesh sampling
+        // raw content coordinates out of a padded store reads the wrong region.
         let ratio = layer.contentRatio
         var vertexBytes = [UInt8]()
-        vertexBytes.reserveCapacity(model.vertices.count * 64)
-        var normal = SIMD3<Float>(0, 0, 1)
+        vertexBytes.reserveCapacity(model.vertices.count * 80)
         for vertex in model.vertices {
             var position = vertex.position
             var indices = vertex.blendIndices
             var weights = vertex.blendWeights
             var uv = vertex.uv * ratio
+            var normal = vertex.normal
+            var tangent = vertex.tangent
             withUnsafeBytes(of: &position) { vertexBytes.append(contentsOf: $0.prefix(12)) }
             withUnsafeBytes(of: &indices) { vertexBytes.append(contentsOf: $0.prefix(16)) }
             withUnsafeBytes(of: &weights) { vertexBytes.append(contentsOf: $0.prefix(16)) }
             withUnsafeBytes(of: &uv) { vertexBytes.append(contentsOf: $0.prefix(8)) }
             withUnsafeBytes(of: &normal) { vertexBytes.append(contentsOf: $0.prefix(12)) }
+            withUnsafeBytes(of: &tangent) { vertexBytes.append(contentsOf: $0.prefix(16)) }
         }
         guard let vertexBuffer = context.device.makeBuffer(bytes: vertexBytes, length: vertexBytes.count,
                                                            options: .storageModeShared),
@@ -1064,6 +1087,18 @@ public final class SceneRenderer {
         return Float((now.hour ?? 0) * 60 + (now.minute ?? 0)) / (24 * 60)
     }
 
+    /// Whether any compiled pass declares one of the spectrum uniforms.
+    private static func readsAudio(_ layers: [ImageLayer]) -> Bool {
+        for layer in layers {
+            for pass in layer.passes {
+                let names = (pass.uniformWriterVertex?.block.members.map(\.name) ?? [])
+                    + (pass.uniformWriterFragment?.block.members.map(\.name) ?? [])
+                if names.contains(where: { $0.hasPrefix("g_AudioSpectrum") }) { return true }
+            }
+        }
+        return false
+    }
+
     // MARK: Bloom
 
     /// Whether a puppet layer draws its skinned mesh instead of a flat quad.
@@ -1349,15 +1384,20 @@ public final class SceneRenderer {
         bag.set("g_EffectTextureProjectionMatrix", matrix_identity_float4x4)
         bag.set("g_EffectTextureProjectionMatrixInverse", matrix_identity_float4x4)
         bag.set("g_ViewProjectionMatrix", matrix_identity_float4x4)
-        let spectrum16 = resample(audioSpectrum, to: 16)
-        let spectrum32 = resample(audioSpectrum, to: 32)
-        let spectrum64 = resample(audioSpectrum, to: 64)
-        bag["g_AudioSpectrum16Left"] = .floatArray(spectrum16)
-        bag["g_AudioSpectrum16Right"] = .floatArray(spectrum16)
-        bag["g_AudioSpectrum32Left"] = .floatArray(spectrum32)
-        bag["g_AudioSpectrum32Right"] = .floatArray(spectrum32)
-        bag["g_AudioSpectrum64Left"] = .floatArray(spectrum64)
-        bag["g_AudioSpectrum64Right"] = .floatArray(spectrum64)
+        // Only a scene that reads the spectrum pays for it: this used to box six
+        // arrays into the dictionary on every frame of every wallpaper.
+        guard usesAudioSpectrum else { return }
+        let derived = derivedSpectrum ?? (l16: resample(audioSpectrumLeft, to: 16),
+                                          r16: resample(audioSpectrumRight, to: 16),
+                                          l32: resample(audioSpectrumLeft, to: 32),
+                                          r32: resample(audioSpectrumRight, to: 32))
+        derivedSpectrum = derived
+        bag["g_AudioSpectrum16Left"] = .floatArray(derived.l16)
+        bag["g_AudioSpectrum16Right"] = .floatArray(derived.r16)
+        bag["g_AudioSpectrum32Left"] = .floatArray(derived.l32)
+        bag["g_AudioSpectrum32Right"] = .floatArray(derived.r32)
+        bag["g_AudioSpectrum64Left"] = .floatArray(audioSpectrumLeft)
+        bag["g_AudioSpectrum64Right"] = .floatArray(audioSpectrumRight)
     }
 
     private func resample(_ values: [Float], to count: Int) -> [Float] {
@@ -1456,11 +1496,16 @@ public final class SceneRenderer {
         bag.merge(globals)
         fillObjectValues(&bag, layer: layer)
 
+        let drawsPuppet = layer.drawsPuppet(pass)
         let mvp = layer.matrix(for: pass, drawsToScene: drawsToScene)
         bag.set("g_ModelViewProjectionMatrix", mvp)
         bag.set("g_EffectModelViewProjectionMatrix", mvp)
         bag.set("g_ModelViewProjectionMatrixInverse", mvp.inverse)
-        let modelMatrix = SceneGeometry.copyMatrix(size: layer.size)
+        // With LIGHTING enabled genericimage3/4 position through
+        // g_ViewProjectionMatrix * g_ModelMatrix and ignore the MVP. Image
+        // passes use an identity view-projection, so the puppet transform must
+        // also occupy the model slot for those shader variants.
+        let modelMatrix = drawsPuppet ? mvp : SceneGeometry.copyMatrix(size: layer.size)
         bag.set("g_ModelMatrix", modelMatrix)
         bag.set("g_EffectModelMatrix", modelMatrix)
         bag.set("g_ModelMatrixInverse", modelMatrix.inverse)
@@ -1485,7 +1530,6 @@ public final class SceneRenderer {
 
         let writesAlpha = !pass.isLastOfObject
         let blend = BlendState(mode: pass.blending, writesAlpha: writesAlpha)
-        let drawsPuppet = layer.drawsPuppet(pass)
         guard let pipeline = try? context.pipeline(program: pass.program,
                                                    layout: drawsPuppet ? .puppet : .quad,
                                                    pixelFormat: destination.pixelFormat, blend: blend,
@@ -1868,7 +1912,8 @@ public final class SceneRenderer {
         if renderWidth != visibleWidth || renderHeight != visibleHeight {
             detail += " rendered at \(renderWidth)x\(renderHeight)"
         }
-        var lines: [String] = [detail + ", \(layers.count) image layers"]
+        var lines: [String] = [detail + ", \(layers.count) image layers"
+            + (usesAudioSpectrum ? ", reads audio" : "")]
         for layer in layers {
             let passNames = layer.passes.map { pass -> String in
                 let dest: String

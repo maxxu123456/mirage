@@ -19,7 +19,7 @@ import UniformTypeIdentifiers
 
 let args = CommandLine.arguments.dropFirst()
 guard let command = args.first else {
-    print("usage: wetool <ls|info|tex|shader|compile-all|render|pipelines|scripts|sound|puppet> ...")
+    print("usage: wetool <ls|info|tex|shader|compile-all|render|pipelines|scripts|sound|puppet|audio> ...")
     exit(2)
 }
 
@@ -86,6 +86,25 @@ case "info":
             print("  [\(o.id)] \(o.kind) \(o.name)  image=\(o.imagePath ?? "-") particle=\(o.particlePath ?? "-") effects=\(effects)")
         }
     }
+
+case "audio":
+    // Starts the system audio tap and prints the spectrum, which is the quickest
+    // way to tell a permission problem from a DSP one.
+    let seconds = Double(intOption(rest, "--seconds") ?? 5)
+    AudioSpectrumProvider.shared.retain()
+    var elapsed = 0.0
+    while elapsed < seconds {
+        Thread.sleep(forTimeInterval: 0.25)
+        elapsed += 0.25
+        let snapshot = AudioSpectrumProvider.shared.snapshot()
+        let bars = stride(from: 0, to: 64, by: 2).map { i -> String in
+            let v = max(snapshot.left[i], snapshot.left[min(63, i + 1)])
+            let levels = [" ", ".", ":", "-", "=", "+", "*", "#", "%", "@"]
+            return levels[min(levels.count - 1, Int(v * Float(levels.count)))]
+        }.joined()
+        print("\(AudioSpectrumProvider.shared.state) [\(bars)] peak \(String(format: "%.3f", snapshot.left.max() ?? 0))")
+    }
+    AudioSpectrumProvider.shared.release()
 
 case "puppet":
     // Parses every .mdl a wallpaper carries, with no renderer, which is how you

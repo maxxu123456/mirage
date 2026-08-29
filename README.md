@@ -16,6 +16,8 @@ natively.
   animation), sprite sheet animation, embedded video textures, blend modes, mouse parallax, and the
   wallpaper's own user properties, and bloom.
 * Plays a scene wallpaper's **sound layers**, with the app's mute and volume.
+* **Audio reactive wallpapers move with whatever your Mac is playing.** macOS asks for Audio Capture
+  permission the first time such a wallpaper runs; nothing is recorded.
 * Runs **web wallpapers** in a web view, with their user properties and cursor tracking.
 * Plays **video wallpapers** (`.mp4`, `.mov`, `.m4v`) with gapless looping, and **image / GIF**
   wallpapers.
@@ -100,7 +102,6 @@ and their effects render; these do not:
 |---|---|
 | Media integration | A wallpaper that shows the song you are playing shows its idle layout instead |
 | Puppet warp | A skinned layer is drawn without its animation |
-| Audio visualiser | Audio reactive layers stay still |
 | Rope particles | Rope and rope trail emitters draw as ordinary sprites |
 
 Particles, text layers, embedded video textures, sound and scripts all work, so clocks show the real

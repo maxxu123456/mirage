@@ -49,11 +49,19 @@ final class SceneWallpaperView: MTKView {
     private var sound: WallpaperSoundPlayer?
     /// The objects behind the sound player, so their volumes can be re-resolved.
     private var soundObjects: [WESceneObject] = []
+    /// True while this view holds a claim on the shared system audio tap.
+    private var listensToAudio = false
 
     init(renderer: SceneRenderer, context: RenderContext, muted: Bool, volume: Float) {
         self.renderer = renderer
         super.init(frame: .zero, device: context.device)
         buildSound(muted: muted, volume: volume)
+        // Only a wallpaper that actually reads the spectrum asks for audio, so
+        // the permission prompt appears for a visualiser and never otherwise.
+        if renderer.usesAudioSpectrum {
+            listensToAudio = true
+            AudioSpectrumProvider.shared.retain()
+        }
         colorPixelFormat = .rgba8Unorm
         framebufferOnly = true
         autoResizeDrawable = true
@@ -96,6 +104,14 @@ final class SceneWallpaperView: MTKView {
         sound?.stop()
         sound = nil
         soundObjects = []
+        if listensToAudio {
+            listensToAudio = false
+            AudioSpectrumProvider.shared.release()
+        }
+    }
+
+    deinit {
+        if listensToAudio { AudioSpectrumProvider.shared.release() }
     }
 
     func setMuted(_ muted: Bool, volume: Float) {
@@ -149,6 +165,10 @@ final class SceneWallpaperView: MTKView {
         guard let drawable = currentDrawable,
               let commandBuffer = renderer.context.commandQueue.makeCommandBuffer() else { return }
         let time = elapsed
+        if listensToAudio {
+            let spectrum = AudioSpectrumProvider.shared.snapshot()
+            renderer.setAudioSpectrum(left: spectrum.left, right: spectrum.right)
+        }
         if let sound {
             sound.setObjectVolumes(soundObjects.map { $0.volume.resolveFloat(renderer.store, default: 1) })
             sound.update(time: time)

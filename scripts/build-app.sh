@@ -44,7 +44,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>LSUIElement</key><true/>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSSupportsAutomaticGraphicsSwitching</key><true/>
-	<key>NSHumanReadableCopyright</key><string>Mirage</string>
+	<key>NSAudioCaptureUsageDescription</key>
+  <string>Mirage listens to the audio playing on your Mac so that audio reactive wallpapers can move with it. Nothing is recorded or stored.</string>
+  <key>NSHumanReadableCopyright</key><string>Mirage</string>
 </dict>
 </plist>
 PLIST

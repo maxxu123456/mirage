@@ -142,6 +142,8 @@ and ping-pong wiring), `SceneRenderer` (scene build, frame loop, present, offscr
   Wallpaper Engine JS shim: user properties reach `wallpaperPropertyListener`, the cursor reaches
   `wallpaperMouseX/Y` and a synthesised `mousemove`, `wallpaperRegisterAudioListener` gets its 128
   bins (silent, since there is no capture), and pausing holds `requestAnimationFrame` and the media.
+* **Audio visualiser**: a Core Audio process tap feeds `g_AudioSpectrum{16,32,64}{Left,Right}`, so
+  audio reactive layers move with whatever the Mac is playing. See section 7.6.
 * **Bloom**: `general.bloom` renders, through the same four stock materials Wallpaper Engine uses.
   Two corpus wallpapers enable it by default (`Pixel Pokemon`, `Spring City`), and its strength and
   threshold stay bound to their user properties.
@@ -164,7 +166,6 @@ Counted over the 12-wallpaper corpus, where 201 image objects render and the res
 | **Media integration** | 1 | `mediaPlaybackChanged` is told once that nothing is playing, which is the truth, but a now-playing title, artist or album art never arrives, so a media wallpaper shows its idle layout. |
 | **Puppet warp** (`.mdl`) | 1 | Parsing, bone matrices, the skinned vertex layout, the `SKINNING` / `BONECOUNT` combos and the `g_Bones` palette all exist and are verified, but drawing the mesh is **off by default** (`MIRAGE_PUPPET=1`) because it is not correct everywhere yet. See section 7.4. |
 | **Lights / `shape`** | 0 | `PerformLighting_V1` is stubbed to return black. |
-| **Audio visualiser** | - | `g_AudioSpectrum*` are zeros, so audio-reactive layers stay flat. Needs system-audio capture, which needs a screen-recording permission. |
 | **Rope particle renderers** | 5 of 69 | `rope` and `ropetrail` fall back to sprites; they need `genericropeparticle` and a Catmull-Rom spline. |
 
 Other limitations:
@@ -714,8 +715,40 @@ In priority order, with everything needed already on disk:
    transforms are read column-major, which no synthetic test can falsify: if the first real puppet
    renders inside out, transpose there before looking anywhere else. The scripting layer's
    animation stubs become real at the same time.
-4. The **audio visualiser** (needs system audio capture and the matching permission), then
-   **rope particles**.
+4. **Rope particles**, the last unimplemented renderer feature.
+
+### 7.6 Audio visualiser: built
+
+`SystemAudioCapture` opens a Core Audio **process tap**
+(`CATapDescription(stereoGlobalTapButExcludeProcesses:)` plus a private aggregate device), not
+ScreenCaptureKit. A tap asks for the "Audio Capture" permission, which is what this actually is;
+ScreenCaptureKit would make a wallpaper app ask to record the *screen*, run a video pipeline whose
+frames are thrown away, and on newer systems re-prompt periodically. Wallpaper Engine's own macOS
+build takes the same route: its binary weak-links `AudioHardwareCreateProcessTap` and it declares
+`NSAudioCaptureUsageDescription`, which `scripts/build-app.sh` now writes into the Info.plist too.
+
+`SpectrumAnalyzer` does the DSP with Accelerate: a 2048 sample Hann window (42.7 ms and 23.4 Hz per
+bin at 48 kHz, where 1024 would be too coarse for the bottom bands), a real-to-complex FFT, and 64
+logarithmically spaced bands from 30 Hz to 16 kHz. Wallpaper Engine's documented contract is 64 bands
+per channel with index 0 lowest and values "generally 0.00 to 1.00", so 64 is the native width and
+the 32 and 16 wide uniforms are averaged down from it. Each band takes the **peak** of its bins, not
+the mean, or a narrow tone in a wide high band averages away to nothing. `SpectrumSmoother` rises
+instantly and falls gradually, which is what stops the bars flickering.
+
+`AudioSpectrumProvider.shared` owns one tap for the whole app, reference counted, so the tap only
+runs while a wallpaper that actually reads the spectrum is on screen, and the permission is only ever
+asked for by such a wallpaper. `SceneRenderer.usesAudioSpectrum` decides that by looking for a
+`g_AudioSpectrum` uniform in any compiled pass; scenes without one no longer box six arrays into the
+uniform dictionary every frame either.
+
+Two things to know:
+
+* **An ad-hoc signature loses the permission on every rebuild.** TCC keys the grant to the code
+  signature, and an ad-hoc bundle's designated requirement is its cdhash, which changes every build.
+  Set `MIRAGE_SIGN_IDENTITY` to a self-signed certificate to keep the grant across builds.
+* `wetool audio` prints the live spectrum as bars, which is how to tell a permission problem from a
+  DSP one. Verified with a two tone signal: 80 Hz and 4 kHz land in the bands a 30 Hz to 16 kHz log
+  sweep puts them in, at a level matching the signal's amplitude.
 
 ## 8. Conventions and gotchas
 

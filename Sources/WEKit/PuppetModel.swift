@@ -30,13 +30,19 @@ public struct PuppetVertex {
     public let blendIndices: SIMD4<UInt32>
     public let blendWeights: SIMD4<Float>
     public let uv: SIMD2<Float>
+    public let normal: SIMD3<Float>
+    public let tangent: SIMD4<Float>
 
     public init(position: SIMD3<Float>, blendIndices: SIMD4<UInt32>,
-                blendWeights: SIMD4<Float>, uv: SIMD2<Float>) {
+                blendWeights: SIMD4<Float>, uv: SIMD2<Float>,
+                normal: SIMD3<Float> = SIMD3(0, 0, 1),
+                tangent: SIMD4<Float> = SIMD4(1, 0, 0, 1)) {
         self.position = position
         self.blendIndices = blendIndices
         self.blendWeights = blendWeights
         self.uv = uv
+        self.normal = normal
+        self.tangent = tangent
     }
 }
 
@@ -336,6 +342,10 @@ private func finite(_ v: SIMD3<Float>, default fallback: SIMD3<Float>) -> SIMD3<
     (v.x.isFinite && v.y.isFinite && v.z.isFinite) ? v : fallback
 }
 
+private func finite(_ v: SIMD4<Float>, default fallback: SIMD4<Float>) -> SIMD4<Float> {
+    (v.x.isFinite && v.y.isFinite && v.z.isFinite && v.w.isFinite) ? v : fallback
+}
+
 // MARK: - Parsing
 
 /// Cursor over the raw file bytes. Every accessor returns `nil` rather than
@@ -502,7 +512,9 @@ private enum PuppetReader {
             PuppetVertex(position: v.position,
                          blendIndices: simd_min(v.blendIndices, clamped),
                          blendWeights: v.blendWeights,
-                         uv: v.uv)
+                         uv: v.uv,
+                         normal: v.normal,
+                         tangent: v.tangent)
         }
 
         // Optional data sections sit between the bones and the animations.
@@ -549,9 +561,17 @@ private enum PuppetReader {
         for index in 0..<count {
             guard c.seek(start + index * stride) else { return nil }
             guard let position = c.float3() else { return nil }
-            // The alternate layout pads the slot after the position with seven
-            // words no reimplementation has identified.
-            if layout == .alternate, !c.skip(28) { return nil }
+            let normal: SIMD3<Float>
+            let tangent: SIMD4<Float>
+            if layout == .alternate {
+                guard let parsedNormal = c.float3(),
+                      let tx = c.f32(), let ty = c.f32(), let tz = c.f32(), let tw = c.f32() else { return nil }
+                normal = finite(parsedNormal, default: SIMD3(0, 0, 1))
+                tangent = finite(SIMD4(tx, ty, tz, tw), default: SIMD4(1, 0, 0, 1))
+            } else {
+                normal = SIMD3(0, 0, 1)
+                tangent = SIMD4(1, 0, 0, 1)
+            }
             guard let i0 = c.u32(), let i1 = c.u32(), let i2 = c.u32(), let i3 = c.u32(),
                   let w0 = c.f32(), let w1 = c.f32(), let w2 = c.f32(), let w3 = c.f32(),
                   let u = c.f32(), let v = c.f32() else { return nil }
@@ -562,7 +582,9 @@ private enum PuppetReader {
                 blendIndices: SIMD4<UInt32>(i0, i1, i2, i3),
                 blendWeights: weights.replacing(with: SIMD4<Float>(repeating: 0),
                                                 where: .!(weights .== weights)),
-                uv: (u.isFinite && v.isFinite) ? uv : SIMD2<Float>(repeating: 0)))
+                uv: (u.isFinite && v.isFinite) ? uv : SIMD2<Float>(repeating: 0),
+                normal: normal,
+                tangent: tangent))
         }
         guard c.seek(start + byteCount) else { return nil }
         return result
