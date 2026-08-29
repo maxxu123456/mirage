@@ -33,6 +33,23 @@ public struct VertexLayout: Hashable {
         ],
         stride: 20)
 
+    /// The `.mdl` vertex: position, the two skinning attributes and the texture
+    /// coordinate, which is 52 bytes as stored, plus a normal.
+    ///
+    /// The file carries no normals because a puppet is a flat sheet, but the
+    /// heavier image shaders declare `a_Normal`, so one facing the camera is
+    /// appended rather than letting the attribute read zeros.
+    public static let puppet = VertexLayout(
+        name: "puppet",
+        attributes: [
+            Attribute(location: 0, format: .float3, offset: 0),
+            Attribute(location: 11, format: .uint4, offset: 12),
+            Attribute(location: 12, format: .float4, offset: 28),
+            Attribute(location: 1, format: .float2, offset: 44),
+            Attribute(location: 3, format: .float3, offset: 52),
+        ],
+        stride: 64)
+
     /// Sprite particles: see `genericparticle.vert`. The shader reads the particle's
     /// rotation, size, velocity and lifetime out of the spare texcoord channels, so the
     /// layout is fixed at 80 bytes with these exact offsets.

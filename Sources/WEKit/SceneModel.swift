@@ -174,6 +174,9 @@ public struct WESceneObject: Identifiable {
     /// with `instanceoverride`, which belongs to particles.
     public let instance: JSON
     public let animationLayers: JSON
+    /// `animationlayers` in typed form. `animation` is the puppet animation's
+    /// **id**, which is not its index in the file.
+    public let animationLayerList: [WEAnimationLayer]
     public let dependencies: [Int]
     public let parent: Int?
     public let playbackMode: String?
@@ -228,6 +231,7 @@ public struct WESceneObject: Identifiable {
         instanceOverride = json["instanceoverride"]
         instance = json["instance"]
         animationLayers = json["animationlayers"]
+        animationLayerList = (json["animationlayers"].array ?? []).map(WEAnimationLayer.init(json:))
         dependencies = (json["dependencies"].array ?? []).compactMap(\.int)
         parent = json["parent"].int
         playbackMode = json["playbackmode"].string
@@ -242,6 +246,9 @@ public struct WEModel {
     public let width: Int?
     public let height: Int?
     public let autosize: Bool
+    /// How far the packed texture's centre sits from the authoring canvas's.
+    /// Only a puppet needs it: its mesh is authored on the uncropped canvas.
+    public let cropOffset: SIMD2<Float>
     public let fullscreen: Bool
     public let passthrough: Bool
     public let solidLayer: Bool
@@ -256,6 +263,7 @@ public struct WEModel {
         width = json["width"].int
         height = json["height"].int
         autosize = json["autosize"].bool ?? false
+        cropOffset = json["cropoffset"].vec2 ?? SIMD2(0, 0)
         fullscreen = json["fullscreen"].bool ?? false
         passthrough = json["passthrough"].bool ?? false
         solidLayer = json["solidlayer"].bool ?? false
@@ -343,6 +351,26 @@ public struct WEEffectFBO {
     public let scale: Float
     public let format: String
     public let unique: Bool
+}
+
+/// One entry of an object's `animationlayers`, driving a puppet animation.
+public struct WEAnimationLayer {
+    public let id: Int
+    public let name: String
+    /// The animation's id in the `.mdl`, not its index.
+    public let animation: Int
+    public let blend: DynamicValue
+    public let rate: DynamicValue
+    public let visible: DynamicValue
+
+    public init(json: JSON) {
+        id = json["id"].int ?? 0
+        name = json["name"].string ?? ""
+        animation = json["animation"].int ?? -1
+        blend = json["blend"].isNull ? DynamicValue(value: .number(1)) : DynamicValue.parse(json["blend"])
+        rate = json["rate"].isNull ? DynamicValue(value: .number(1)) : DynamicValue.parse(json["rate"])
+        visible = json["visible"].isNull ? DynamicValue(value: .bool(true)) : DynamicValue.parse(json["visible"])
+    }
 }
 
 public struct WEEffectPass {

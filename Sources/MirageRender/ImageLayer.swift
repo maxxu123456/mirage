@@ -122,6 +122,47 @@ public final class ImageLayer {
     /// Per-frame state.
     public var rect = LayerRect(left: 0, right: 0, yHigh: 0, yLow: 0)
     public var screenMatrix = matrix_identity_float4x4
+
+    /// A skinned mesh that replaces this layer's quad on one pass.
+    public final class PuppetBinding {
+        public let model: PuppetModel
+        public let vertexBuffer: MTLBuffer
+        public let indexBuffer: MTLBuffer
+        public let indexCount: Int
+        /// One clock per animation layer, advanced by that layer's own rate.
+        public var times: [Double]
+        public var boneMatrices: [simd_float4x4]
+        public let modelCenter: SIMD2<Float>
+        public let modelExtent: SIMD2<Float>
+
+        public let cropOffset: SIMD2<Float>
+
+        public init(model: PuppetModel, vertexBuffer: MTLBuffer, indexBuffer: MTLBuffer, indexCount: Int,
+                    cropOffset: SIMD2<Float> = SIMD2(0, 0)) {
+            self.cropOffset = cropOffset
+            self.model = model
+            self.vertexBuffer = vertexBuffer
+            self.indexBuffer = indexBuffer
+            self.indexCount = indexCount
+            self.times = []
+            self.boneMatrices = [simd_float4x4](repeating: matrix_identity_float4x4, count: model.bones.count)
+            let space = model.modelSpace
+            self.modelCenter = space.center
+            self.modelExtent = space.extent
+        }
+    }
+
+    public var puppet: PuppetBinding?
+    /// The one pass that draws the mesh rather than the quad.
+    public var puppetPassIndex: Int?
+    /// `screenMatrix` folded with the mesh's own space.
+    public var puppetMatrix = matrix_identity_float4x4
+
+    /// True when this pass draws the skinned mesh.
+    public func drawsPuppet(_ pass: CompiledPass) -> Bool {
+        guard puppet != nil, let index = puppetPassIndex, index < passes.count else { return false }
+        return passes[index] === pass
+    }
     public var copyMatrix = matrix_identity_float4x4
 
     init(object: WESceneObject, model: WEModel, size: SIMD2<Float>, texture: GPUTexture?,
@@ -219,6 +260,13 @@ public final class ImageLayer {
         screenMatrix = SceneGeometry.screenMatrix(projection: projection, rect: rect,
                                                   angle: transform.angle, parallax: parallax)
         copyMatrix = isPassthrough ? screenMatrix : SceneGeometry.copyMatrix(size: size)
+        if let puppet {
+            // The mesh is skinned in its own space, so the transform reaches it
+            // as a matrix rather than baked into the vertices.
+            puppetMatrix = screenMatrix * SceneGeometry.meshMatrix(rect: rect,
+                                                                    modelCenter: puppet.modelCenter,
+                                                                    modelExtent: puppet.modelExtent)
+        }
     }
 
     /// Vertices for a pass, given whether its final-pass redirect is active this frame.
@@ -247,6 +295,7 @@ public final class ImageLayer {
     }
 
     public func matrix(for pass: CompiledPass, drawsToScene: Bool) -> simd_float4x4 {
+        if drawsPuppet(pass) { return puppetMatrix }
         if drawsToScene { return screenMatrix }
         if pass.isFirst { return copyMatrix }
         return matrix_identity_float4x4

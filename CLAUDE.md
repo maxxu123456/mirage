@@ -162,7 +162,7 @@ Counted over the 12-wallpaper corpus, where 201 image objects render and the res
 | Missing | In corpus | Effect |
 |---|---|---|
 | **Media integration** | 1 | `mediaPlaybackChanged` is told once that nothing is playing, which is the truth, but a now-playing title, artist or album art never arrives, so a media wallpaper shows its idle layout. |
-| **Puppet warp** (`.mdl`) | 1 | The skinned layer draws as a static quad. `Sources/WEKit/PuppetModel.swift` parses the format and computes bone matrices, but the renderer does not yet emit the `SKINNING` / `BONECOUNT` combos, the skinned vertex layout or `g_Bones`. |
+| **Puppet warp** (`.mdl`) | 1 | Parsing, bone matrices, the skinned vertex layout, the `SKINNING` / `BONECOUNT` combos and the `g_Bones` palette all exist and are verified, but drawing the mesh is **off by default** (`MIRAGE_PUPPET=1`) because it is not correct everywhere yet. See section 7.4. |
 | **Lights / `shape`** | 0 | `PerformLighting_V1` is stubbed to return black. |
 | **Audio visualiser** | - | `g_AudioSpectrum*` are zeros, so audio-reactive layers stay flat. Needs system-audio capture, which needs a screen-recording permission. |
 | **Rope particle renderers** | 5 of 69 | `rope` and `ropetrail` fall back to sprites; they need `genericropeparticle` and a Catmull-Rom spline. |
@@ -330,6 +330,46 @@ Common fields: `id`, `name`, `parent`, `dependencies[]`, `origin "x y z"`, `scal
 `{"user":{"name":"prop","condition":"1"},"value":v}` (the value becomes `property == condition`), or
 `{"script":"…","value":v}`. `DynamicValue` handles all three, and `ConditionEvaluator` parses the
 JS-ish `condition` expressions (`bloom.value == true`, `amount > 0.5 && showclock`).
+
+### 4.4b `.mdl` puppet models
+
+```
+char[9] "MDLV00xx"        13, 16, 21 and 23 seen
+i32     flag              low byte 9 marks a rig the editor never finished
+i32, i32                  both 1 in every file seen
+char[]  material path     NUL-terminated, NOT length-prefixed
+i32     0
+<vertex layout, vertices, indices>
+char[9] "MDLS00xx"        bones, then in v>1 an extras block
+char[9] "MDLA00xx"        animations
+```
+
+**Strings are NUL-terminated C strings**, unlike `scene.pkg`, which length-prefixes its names. This
+one difference made `PuppetModel.parse` return nil for every real file: it read the first four
+characters of `materials/...` as a length.
+
+The **MDLS extras block** begins with one matrix per bone, and that is the **local rest pose**, which
+is what the animation tracks are expressed against. The bone records hold something else; using them
+displaces the mesh. A skinning matrix is therefore
+`poseWorld[i] * inverse(restWorld[i])`, accumulating both down the parent chain, which is the
+identity at rest. That is verified: across nine real models the deviation from the identity at rest
+is below 1e-4, and for the record-player arm frame 0 of its "Reference" animation reproduces it too.
+
+An **MDLA v3 animation trailer** is a u32 event count, then a flag byte saying whether per-bone alpha
+curves follow, and if so one curve per track (`u32 boneId, u32 byteCount, bytes`, one float per
+frame). Skipping a single byte there leaves the cursor inside the count and every later animation in
+the file is read as garbage: the arm yielded 1 animation instead of 4.
+
+`animationlayers[].animation` in `scene.json` is the animation's **id**, not its index.
+
+A mesh's positions are pixels about its own centre with y up, and they map **linearly onto the
+layer's texture coordinates**: a least-squares fit over real models is exact to 5 decimals, and
+recovers an extent equal to the layer's own size. So the mesh-to-scene matrix is the quad's placement
+written as a matrix, with a negative y scale for the mirrored scene space (which also reverses the
+winding, so that draw must not cull).
+
+`wetool puppet <dir>` parses a wallpaper's models, prints bones and animations, and reports how far
+the rest pose is from the identity.
 
 ### 4.5 Models, materials, effects
 

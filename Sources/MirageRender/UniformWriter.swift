@@ -15,6 +15,9 @@ public enum ShaderValue {
     case floatArray([Float])
     case vec4Array([SIMD4<Float>])
     case vec3Array([SIMD3<Float>])
+    /// A bone palette. Each matrix contributes its four columns, three floats
+    /// each, which is exactly how a `mat4x3` array is laid out.
+    case mat4x3Array([simd_float4x4])
 
     /// Component values of one element (used for scalars, vectors and array elements).
     var components: [Float] {
@@ -30,6 +33,7 @@ public enum ShaderValue {
         case .floatArray(let a): return a
         case .vec4Array(let a): return a.flatMap { [$0.x, $0.y, $0.z, $0.w] }
         case .vec3Array(let a): return a.flatMap { [$0.x, $0.y, $0.z] }
+        case .mat4x3Array(let a): return a.flatMap { m in (0..<4).flatMap { [m[$0].x, m[$0].y, m[$0].z] } }
         }
     }
 
@@ -41,6 +45,7 @@ public enum ShaderValue {
         case .vec3Array(let a): return a.map { [$0.x, $0.y, $0.z] }
         case .mat3(let m): return (0..<3).map { [m[$0].x, m[$0].y, m[$0].z] }
         case .mat4(let m): return (0..<4).map { [m[$0].x, m[$0].y, m[$0].z, m[$0].w] }
+        case .mat4x3Array(let a): return a.flatMap { m in (0..<4).map { [m[$0].x, m[$0].y, m[$0].z] } }
         default: return [components]
         }
     }

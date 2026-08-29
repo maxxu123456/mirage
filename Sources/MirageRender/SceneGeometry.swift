@@ -43,6 +43,24 @@ public struct LayerRect {
 
 public enum SceneGeometry {
 
+    /// Maps a puppet mesh's own space into the renderer's centred, y-mirrored
+    /// scene space.
+    ///
+    /// A `.mdl` stores positions in pixels about its own centre with y up, over
+    /// the same extent the layer's quad covers, so this is the quad's placement
+    /// expressed as a matrix. The y scale is negative because the scene space is
+    /// mirrored, which also reverses the winding: the puppet draw turns culling
+    /// off rather than relying on the material to have done so.
+    public static func meshMatrix(rect: LayerRect, modelCenter: SIMD2<Float>,
+                                  modelExtent: SIMD2<Float>) -> simd_float4x4 {
+        let width = modelExtent.x != 0 ? modelExtent.x : 1
+        let height = modelExtent.y != 0 ? modelExtent.y : 1
+        let center = rect.center
+        return Mat.translation(center.x, center.y, 0)
+            * Mat.scale((rect.right - rect.left) / width, -(rect.yHigh - rect.yLow) / height, 1)
+            * Mat.translation(-modelCenter.x, -modelCenter.y, 0)
+    }
+
     // MARK: Transforms
 
     /// Folds `parent` chains: `origin = parentOrigin + rotateCCW(childOrigin * parentScale, parentAngle)`,

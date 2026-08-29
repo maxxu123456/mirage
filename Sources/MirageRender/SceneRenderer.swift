@@ -79,6 +79,10 @@ public final class SceneRenderer {
     /// Set MIRAGE_DEBUG=1 to log every encoded pass.
     private let debugLogging = ProcessInfo.processInfo.environment["MIRAGE_DEBUG"] != nil
 
+    /// Object ids forced visible whatever the scene says, for debugging a layer
+    /// that is hidden by default.
+    public var forceVisibleObjects: Set<Int> = []
+
     /// Normalised pointer position, x right / y down, as `g_PointerPosition` expects.
     public var pointerPosition = SIMD2<Float>(0.5, 0.5)
     private var pointerPositionLast = SIMD2<Float>(0.5, 0.5)
@@ -533,6 +537,61 @@ public final class SceneRenderer {
         return WEMaterial(json: .object(raw))
     }
 
+    /// Loads a layer's `.mdl` and uploads its mesh.
+    ///
+    /// The buffers are real `MTLBuffer`s rather than inline vertex bytes: even
+    /// the smallest puppet here is 43 KB of vertices, ten times Metal's inline
+    /// limit. A file that will not parse leaves the layer drawing as a flat
+    /// quad, which is what it did before puppets existed.
+    private func attachPuppet(to layer: ImageLayer, path: String, object: WESceneObject,
+                              cropOffset: SIMD2<Float>) {
+        guard let data = locator.data(path) else {
+            diagnostics.append("[\(object.id)] puppet not found: \(path)")
+            return
+        }
+        guard let model = PuppetModel.parse(data), !model.bones.isEmpty, !model.indices.isEmpty else {
+            diagnostics.append("[\(object.id)] puppet could not be parsed: \(path)")
+            return
+        }
+        // Drawing the mesh is off unless asked for. It is correct on the one
+        // wallpaper it has been verified against and makes some layers of
+        // another vanish, and a missing layer is worse than the flat quad this
+        // renderer has always drawn. See section 7.4.
+        guard SceneRenderer.puppetMeshEnabled else { return }
+        // The file's own 52 byte vertex, uploaded as it is stored, except that
+        // the texture coordinates are scaled into the padded texture the way the
+        // quad path scales its own. A mesh sampling raw content coordinates out
+        // of a power-of-two padded store reads the wrong corner of it entirely.
+        let ratio = layer.contentRatio
+        var vertexBytes = [UInt8]()
+        vertexBytes.reserveCapacity(model.vertices.count * 64)
+        var normal = SIMD3<Float>(0, 0, 1)
+        for vertex in model.vertices {
+            var position = vertex.position
+            var indices = vertex.blendIndices
+            var weights = vertex.blendWeights
+            var uv = vertex.uv * ratio
+            withUnsafeBytes(of: &position) { vertexBytes.append(contentsOf: $0.prefix(12)) }
+            withUnsafeBytes(of: &indices) { vertexBytes.append(contentsOf: $0.prefix(16)) }
+            withUnsafeBytes(of: &weights) { vertexBytes.append(contentsOf: $0.prefix(16)) }
+            withUnsafeBytes(of: &uv) { vertexBytes.append(contentsOf: $0.prefix(8)) }
+            withUnsafeBytes(of: &normal) { vertexBytes.append(contentsOf: $0.prefix(12)) }
+        }
+        guard let vertexBuffer = context.device.makeBuffer(bytes: vertexBytes, length: vertexBytes.count,
+                                                           options: .storageModeShared),
+              let indexBuffer = context.device.makeBuffer(bytes: model.indices,
+                                                          length: model.indices.count * 2,
+                                                          options: .storageModeShared) else {
+            diagnostics.append("[\(object.id)] puppet buffers could not be created")
+            return
+        }
+        vertexBuffer.label = "puppet.\(object.id).vertices"
+        indexBuffer.label = "puppet.\(object.id).indices"
+        layer.puppet = ImageLayer.PuppetBinding(model: model, vertexBuffer: vertexBuffer,
+                                                indexBuffer: indexBuffer, indexCount: model.indices.count,
+                                                cropOffset: cropOffset)
+    }
+
     private func makeLayer(object: WESceneObject, model: WEModel, material: WEMaterial,
                            passthrough: Bool, objectsById: [Int: WESceneObject]) -> ImageLayer? {
         // The object's texture is slot 0 (lowest slot) of the material's first pass.
@@ -592,6 +651,10 @@ public final class SceneRenderer {
                                isFullscreen: model.fullscreen, alignment: alignmentRaw)
         layer.missingTexture = missingTexture
 
+        if let puppetPath = model.puppet {
+            attachPuppet(to: layer, path: puppetPath, object: object, cropOffset: model.cropOffset)
+        }
+
         let w = scaled(Int(size.x.rounded())), h = scaled(Int(size.y.rounded()))
         let samplerKey = objectTexture?.samplerKey ?? .linearClamp
         if let a = makeTarget(name: "_rt_imageLayerComposite_\(object.id)_a", width: w, height: h,
@@ -620,6 +683,14 @@ public final class SceneRenderer {
         let effectIndex: Int?
         let shaderOverride: String?
         let extraCombos: [String: Int]
+
+        func adding(combos: [String: Int]) -> PassSpec {
+            var merged = extraCombos
+            for (key, value) in combos { merged[key] = value }
+            return PassSpec(materialPass: materialPass, override: override, binds: binds, target: target,
+                            scope: scope, effectIndex: effectIndex, shaderOverride: shaderOverride,
+                            extraCombos: merged)
+        }
     }
 
     private func buildPasses(layer: ImageLayer, material: WEMaterial, visibleEffects: [WEEffectInstance]) {
@@ -689,12 +760,34 @@ public final class SceneRenderer {
             }
         }
 
+        // A puppet replaces the quad on whichever pass ends up drawing the layer,
+        // so that is the one compiled with skinning. With no effects in the way
+        // that is the material's own pass; otherwise a copy of it is appended
+        // after the chain and draws the skinned mesh over the result.
+        var puppetSpecIndex: Int?
+        if let puppet = layer.puppet {
+            let skinning = ["SKINNING": 1, "BONECOUNT": puppet.model.bones.count]
+            if specs.count == 1, let only = specs.first {
+                specs[0] = only.adding(combos: skinning)
+                puppetSpecIndex = 0
+            } else if let base = material.passes.first {
+                var combos = skinning
+                for (key, value) in base.combos { combos[key.uppercased()] = value }
+                specs.append(PassSpec(materialPass: base, override: nil, binds: [], target: nil,
+                                      scope: layer.objectScope, effectIndex: nil, shaderOverride: nil,
+                                      extraCombos: combos))
+                puppetSpecIndex = specs.count - 1
+            }
+        }
+
         for (index, spec) in specs.enumerated() {
             guard let compiled = compile(spec: spec, objectTexture: layer.texture, note: { layer.note($0) }) else { continue }
             if let target = spec.target { layer.passTargets[layer.passes.count] = target }
-            _ = index
+            if index == puppetSpecIndex { layer.puppetPassIndex = layer.passes.count }
             layer.append(compiled)
         }
+        // A puppet whose pass failed to compile falls back to its flat quad.
+        if layer.puppetPassIndex == nil { layer.puppet = nil }
     }
 
     // MARK: Pass compilation
@@ -897,6 +990,35 @@ public final class SceneRenderer {
         if let override = spec.override { apply(override.constantShaderValues) }
     }
 
+    /// Advances a puppet's animation layers and recomputes its bone palette.
+    ///
+    /// A scene names an animation by **id**, not by index, and each animation
+    /// layer runs at its own rate, so each keeps its own clock. A layer whose
+    /// `visible` resolves false contributes nothing.
+    private func posePuppet(_ layer: ImageLayer, dt: Float) {
+        guard let binding = layer.puppet else { return }
+        let animationLayers = layer.object.animationLayerList
+        if binding.times.count != animationLayers.count {
+            binding.times = [Double](repeating: 0, count: animationLayers.count)
+        }
+        var active: [(animation: Int, blend: Float, rate: Float)] = []
+        for (index, entry) in animationLayers.enumerated() {
+            let rate = entry.rate.resolveFloat(store, default: 1)
+            let safeRate = rate.isFinite ? rate : 1
+            binding.times[index] += Double(dt)
+            guard entry.visible.resolveBool(store, default: true) else { continue }
+            let blend = entry.blend.resolveFloat(store, default: 1)
+            guard blend.isFinite, blend > 0 else { continue }
+            guard let resolved = binding.model.animationIndex(withID: entry.animation)
+                ?? binding.model.animationIndex(named: entry.name) else { continue }
+            active.append((animation: resolved, blend: blend, rate: safeRate))
+        }
+        // With no animation layers at all the mesh sits in its rest pose, which
+        // is exactly where the file already draws it.
+        binding.boneMatrices = binding.model.boneMatrices(layers: active,
+                                                          time: binding.times.first ?? 0)
+    }
+
     /// A value a script wrote onto this object's layer, if any. Scripts animate
     /// objects they do not drive, so a layer write outranks the stored value.
     func scriptedValue(_ object: WESceneObject, _ property: String) -> JSON? {
@@ -912,6 +1034,10 @@ public final class SceneRenderer {
     }
 
     // MARK: Bloom
+
+    /// Whether a puppet layer draws its skinned mesh instead of a flat quad.
+    /// Off by default while the mesh path is finished; see section 7.4.
+    public static var puppetMeshEnabled = ProcessInfo.processInfo.environment["MIRAGE_PUPPET"] != nil
 
     /// The id of the synthetic object that carries the bloom chain. Negative so
     /// it can never collide with a real scene object.
@@ -1126,8 +1252,9 @@ public final class SceneRenderer {
         for entry in orderedLayers {
             switch entry {
             case .image(let layer):
-                let visible = scriptedValue(layer.object, "visible")?.bool
-                    ?? layer.object.visible.resolveBool(store, default: true)
+                let visible = forceVisibleObjects.contains(layer.object.id) ? true
+                    : (scriptedValue(layer.object, "visible")?.bool
+                        ?? layer.object.visible.resolveBool(store, default: true))
                 // An invisible layer another one samples still has to fill its
                 // own composite; it is only kept out of the scene draw.
                 let producesComposite = dependencyTargets.contains(layer.object.id)
@@ -1137,6 +1264,7 @@ public final class SceneRenderer {
                 let parallax = parallaxOffset(for: layer.object)
                 layer.updateGeometry(transform: transform, sceneWidth: Float(sceneWidth), sceneHeight: Float(sceneHeight),
                                      projection: projection, parallax: parallax)
+                if layer.puppet != nil { posePuppet(layer, dt: dt) }
                 for pass in layer.passes {
                     encode(pass: pass, layer: layer, visible: visible, producesComposite: producesComposite,
                            globals: globals, elapsed: elapsed, commandBuffer: commandBuffer)
@@ -1325,7 +1453,9 @@ public final class SceneRenderer {
 
         let writesAlpha = !pass.isLastOfObject
         let blend = BlendState(mode: pass.blending, writesAlpha: writesAlpha)
-        guard let pipeline = try? context.pipeline(program: pass.program, layout: .quad,
+        let drawsPuppet = layer.drawsPuppet(pass)
+        guard let pipeline = try? context.pipeline(program: pass.program,
+                                                   layout: drawsPuppet ? .puppet : .quad,
                                                    pixelFormat: destination.pixelFormat, blend: blend,
                                                    label: pass.shaderName) else {
             if debugLogging { print("  [\(layer.object.id)] \(pass.shaderName): PIPELINE FAILED") }
@@ -1335,9 +1465,16 @@ public final class SceneRenderer {
         encoder.setRenderPipelineState(pipeline)
 
         let vertices = layer.vertices(for: pass, drawsToScene: drawsToScene)
-        vertices.withUnsafeBytes { bytes in
-            if let base = bytes.baseAddress {
-                encoder.setVertexBytes(base, length: bytes.count, index: BufferIndex.vertices)
+        if drawsPuppet, let binding = layer.puppet {
+            // The mesh is far past Metal's inline vertex limit, so it lives in a
+            // buffer, and the bone palette rides in with the other uniforms.
+            encoder.setVertexBuffer(binding.vertexBuffer, offset: 0, index: BufferIndex.vertices)
+            bag.set("g_Bones", .mat4x3Array(binding.boneMatrices))
+        } else {
+            vertices.withUnsafeBytes { bytes in
+                if let base = bytes.baseAddress {
+                    encoder.setVertexBytes(base, length: bytes.count, index: BufferIndex.vertices)
+                }
             }
         }
         encoder.setVertexBuffer(context.zeroBuffer, offset: 0, index: BufferIndex.zeroFill)
@@ -1385,7 +1522,16 @@ public final class SceneRenderer {
             encoder.setVertexSamplerState(sampler, index: binding.index)
         }
 
-        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertices.count)
+        if drawsPuppet, let binding = layer.puppet {
+            // meshMatrix mirrors y, which reverses the winding, so this draw
+            // never culls whatever the material asked for.
+            encoder.setCullMode(.none)
+            encoder.drawIndexedPrimitives(type: .triangle, indexCount: binding.indexCount,
+                                          indexType: .uint16, indexBuffer: binding.indexBuffer,
+                                          indexBufferOffset: 0)
+        } else {
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertices.count)
+        }
         encoder.endEncoding()
         if debugLogging {
             let slots = bound.keys.sorted().compactMap { slot in bound[slot].map { "\(slot):\($0.name)" } }.joined(separator: ",")

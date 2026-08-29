@@ -1,4 +1,5 @@
 import Foundation
+import simd
 import WEKit
 import MirageRender
 import CoreGraphics
@@ -107,6 +108,55 @@ case "puppet":
         for bone in model.bones { print("    bone \(bone.name) parent=\(bone.parent.map(String.init) ?? "-")") }
         for a in model.animations {
             print("    anim id=\(a.id) \(a.name) mode=\(a.mode) fps=\(a.fps) frames=\(a.frameCount) tracks=\(a.tracks.count)")
+        }
+        // At rest, and at frame 0 of a reference animation, every skinning matrix
+        // should be the identity: the mesh as stored is already in its rest pose.
+        func report(_ label: String, _ ms: [simd_float4x4]) {
+            var worst: Float = 0
+            for m in ms {
+                for c in 0..<4 {
+                    for r in 0..<3 {
+                        let expected: Float = (c == r) ? 1 : 0
+                        worst = max(worst, abs(m[c][r] - expected))
+                    }
+                }
+            }
+            print(String(format: "    %@: max deviation from identity %.5f", label, worst))
+        }
+        var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        var uvLo = SIMD2<Float>(repeating: .greatestFiniteMagnitude)
+        var uvHi = SIMD2<Float>(repeating: -.greatestFiniteMagnitude)
+        for v in model.vertices {
+            lo = simd_min(lo, v.position); hi = simd_max(hi, v.position)
+            uvLo = simd_min(uvLo, v.uv); uvHi = simd_max(uvHi, v.uv)
+        }
+        print(String(format: "    position range x[%.1f, %.1f] y[%.1f, %.1f] z[%.3f, %.3f]  uv x[%.3f, %.3f] y[%.3f, %.3f]",
+                     lo.x, hi.x, lo.y, hi.y, lo.z, hi.z, uvLo.x, uvHi.x, uvLo.y, uvHi.y))
+        // Least squares fit of u = a*x + b and v = c*y + d, with the residual, to
+        // show whether the mesh really maps linearly onto its texture.
+        func fit(_ xs: [Float], _ ys: [Float]) -> (a: Float, b: Float, residual: Float) {
+            let n = Float(xs.count)
+            guard n > 1 else { return (0, 0, 0) }
+            let mx = xs.reduce(0, +) / n, my = ys.reduce(0, +) / n
+            var sxy: Float = 0, sxx: Float = 0
+            for i in 0..<xs.count { sxy += (xs[i] - mx) * (ys[i] - my); sxx += (xs[i] - mx) * (xs[i] - mx) }
+            let a = sxx > 0 ? sxy / sxx : 0
+            let b = my - a * mx
+            var worst: Float = 0
+            for i in 0..<xs.count { worst = max(worst, abs(a * xs[i] + b - ys[i])) }
+            return (a, b, worst)
+        }
+        let fx = fit(model.vertices.map(\.position.x), model.vertices.map(\.uv.x))
+        let fy = fit(model.vertices.map(\.position.y), model.vertices.map(\.uv.y))
+        print(String(format: "    u = %.6f x + %.4f (max residual %.4f) -> extent %.1f",
+                     fx.a, fx.b, fx.residual, fx.a != 0 ? 1 / fx.a : 0))
+        print(String(format: "    v = %.6f y + %.4f (max residual %.4f) -> extent %.1f",
+                     fy.a, fy.b, fy.residual, fy.a != 0 ? -1 / fy.a : 0))
+        report("no layers", model.boneMatrices(layers: [], time: 0))
+        if let reference = model.animations.firstIndex(where: { $0.name.lowercased().contains("reference") }) {
+            report("reference frame 0",
+                   model.boneMatrices(layers: [(animation: reference, blend: 1, rate: 1)], time: 0))
         }
     }
 
@@ -323,6 +373,9 @@ case "render":
     // --display-res asks for the output size instead.
     let renderer = try SceneRenderer(project: project, locator: locator, outputSize: size,
                                      scaleToOutput: rest.contains("--display-res"))
+    if let forced = stringOption(rest, "--force-visible") {
+        renderer.forceVisibleObjects = Set(forced.split(separator: ",").compactMap { Int($0) })
+    }
     let setupMs = Date().timeIntervalSince(setupStart) * 1000
     print(renderer.summary)
 

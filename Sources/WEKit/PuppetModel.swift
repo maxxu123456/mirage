@@ -46,11 +46,20 @@ public struct PuppetBone {
     /// bone's own index, so a single forward pass can evaluate the hierarchy.
     public let parent: Int?
     public let bindTransform: simd_float4x4
+    /// The bone's **local** rest transform, from the section's extra block.
+    ///
+    /// This, not `bindTransform`, is what the animation tracks are relative to:
+    /// frame 0 of the reference animation reproduces it exactly, while the bone
+    /// record holds an unrelated transform. Falls back to the bind transform for
+    /// a file that has no extras block.
+    public let restTransform: simd_float4x4
 
-    public init(name: String, parent: Int?, bindTransform: simd_float4x4) {
+    public init(name: String, parent: Int?, bindTransform: simd_float4x4,
+                restTransform: simd_float4x4? = nil) {
         self.name = name
         self.parent = parent
         self.bindTransform = bindTransform
+        self.restTransform = restTransform ?? bindTransform
     }
 }
 
@@ -104,6 +113,39 @@ public struct PuppetModel {
 
     /// Index of the first animation with this name, for callers that hold names
     /// (`animationlayers` in `scene.json`) rather than indices.
+    /// `animationlayers` in a scene names an animation by **id**, not by index.
+    /// The mesh's own extent and centre, derived from how its positions map to
+    /// its texture coordinates.
+    ///
+    /// A puppet is authored in a fixed square of model space (1500 units in
+    /// every file seen) that covers the whole texture, which is not the same as
+    /// the layer's size in the scene. Fitting it from the data rather than
+    /// assuming the constant means an unusual file still lands correctly.
+    public var modelSpace: (center: SIMD2<Float>, extent: SIMD2<Float>) {
+        var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        var uvLo = SIMD2<Float>(repeating: .greatestFiniteMagnitude)
+        var uvHi = SIMD2<Float>(repeating: -.greatestFiniteMagnitude)
+        for vertex in vertices {
+            lo = simd_min(lo, vertex.position); hi = simd_max(hi, vertex.position)
+            uvLo = simd_min(uvLo, vertex.uv); uvHi = simd_max(uvHi, vertex.uv)
+        }
+        let fallback = (center: SIMD2<Float>(0, 0), extent: SIMD2<Float>(1500, 1500))
+        guard lo.x.isFinite, hi.x > lo.x, hi.y > lo.y else { return fallback }
+        let spanU = uvHi.x - uvLo.x, spanV = uvHi.y - uvLo.y
+        guard spanU > 0.01, spanV > 0.01 else { return fallback }
+        let extent = SIMD2<Float>((hi.x - lo.x) / spanU, (hi.y - lo.y) / spanV)
+        guard extent.x.isFinite, extent.y.isFinite, extent.x > 1, extent.y > 1 else { return fallback }
+        // u grows with x, but v grows *downwards* while y grows up.
+        let center = SIMD2<Float>(lo.x + (0.5 - uvLo.x) * extent.x,
+                                  lo.y + (uvHi.y - 0.5) * extent.y)
+        return (center, extent)
+    }
+
+    public func animationIndex(withID id: Int) -> Int? {
+        animations.firstIndex { $0.id == id }
+    }
+
     public func animationIndex(named name: String) -> Int? {
         animations.firstIndex { $0.name == name }
     }
@@ -124,15 +166,11 @@ public extension PuppetModel {
         guard !bones.isEmpty else { return [] }
         let count = bones.count
 
-        // Local bind pose, the fallback for bones with no animation influence.
-        var locals = [simd_float4x4](repeating: matrix_identity_float4x4, count: count)
-        for i in 0..<count {
-            if let parent = bones[i].parent, parent < i {
-                locals[i] = safeInverse(bones[parent].bindTransform) * bones[i].bindTransform
-            } else {
-                locals[i] = bones[i].bindTransform
-            }
-        }
+        // The rest transforms are already local, so a bone with no animation
+        // influence simply keeps its own. Deriving a local from a parent here
+        // would be wrong twice over: it assumes world-space rests, and the bone
+        // records it used to read are not the rest pose at all.
+        var locals = bones.map(\.restTransform)
 
         // The accumulator sums weighted poses, so it starts at zero on every
         // component, including scale, and is divided by the total weight below.
@@ -167,15 +205,22 @@ public extension PuppetModel {
             locals[bone] = pose.matrix
         }
 
+        // The skinning matrix takes a vertex out of the rest pose and into the
+        // posed one, so it is the posed world transform times the inverse of the
+        // rest world transform. At the rest pose that is the identity, which is
+        // what leaves an unanimated mesh exactly where the file drew it.
+        var restWorld = [simd_float4x4](repeating: matrix_identity_float4x4, count: count)
         var world = [simd_float4x4](repeating: matrix_identity_float4x4, count: count)
         var result = [simd_float4x4](repeating: matrix_identity_float4x4, count: count)
         for bone in 0..<count {
             if let parent = bones[bone].parent, parent < bone {
                 world[bone] = world[parent] * locals[bone]
+                restWorld[bone] = restWorld[parent] * bones[bone].restTransform
             } else {
                 world[bone] = locals[bone]
+                restWorld[bone] = bones[bone].restTransform
             }
-            result[bone] = sanitized(world[bone] * safeInverse(bones[bone].bindTransform))
+            result[bone] = sanitized(world[bone] * safeInverse(restWorld[bone]))
         }
         return result
     }
@@ -574,24 +619,52 @@ private enum PuppetReader {
         }
 
         if (trailingVersion(tag) ?? 1) > 1 {
-            skipSkinningExtras(&c, boneCount: count)
+            let rest = skipSkinningExtras(&c, boneCount: count)
+            if rest.count == result.count {
+                result = zip(result, rest).map {
+                    PuppetBone(name: $0.name, parent: $0.parent, bindTransform: $0.bindTransform,
+                               restTransform: $1)
+                }
+            }
         }
         return result
     }
 
     /// Post-bone blocks in MDLS versions above 1. Nothing here is used yet, and
     /// a failure only costs the animations, so it reports nothing.
-    private static func skipSkinningExtras(_ c: inout Cursor, boneCount: Int) {
-        guard c.skip(2) else { return }                     // i16 0
-        guard let hasTransforms = c.u8() else { return }
-        if hasTransforms != 0, !c.skip(boneCount * 64) { return }
-        guard let groupCount = c.u32(), Int(groupCount) <= c.remaining / 12 else { return }
-        guard c.skip(Int(groupCount) * 12) else { return }
-        guard c.skip(4) else { return }
-        guard let hasOffsets = c.u8() else { return }
-        if hasOffsets != 0, !c.skip(boneCount * 76) { return }
-        guard let hasIndices = c.u8() else { return }
-        if hasIndices != 0, !c.skip(boneCount * 4) { return }
+    /// Reads the post-bone block in MDLS versions above 1.
+    ///
+    /// The first part of it is the **local rest pose**, one matrix per bone, and
+    /// it is what the animation tracks are expressed against. The bone records
+    /// themselves hold something else, and using those instead displaces the
+    /// mesh by hundreds of pixels.
+    @discardableResult
+    private static func skipSkinningExtras(_ c: inout Cursor, boneCount: Int) -> [simd_float4x4] {
+        var rest: [simd_float4x4] = []
+        guard c.skip(2) else { return rest }                // i16 0
+        guard let hasTransforms = c.u8() else { return rest }
+        if hasTransforms != 0 {
+            rest.reserveCapacity(boneCount)
+            for _ in 0..<boneCount {
+                var values = [Float](repeating: 0, count: 16)
+                for i in 0..<16 {
+                    guard let value = c.f32() else { return [] }
+                    values[i] = value.isFinite ? value : (i % 5 == 0 ? 1 : 0)
+                }
+                rest.append(simd_float4x4(columns: (SIMD4(values[0], values[1], values[2], values[3]),
+                                                     SIMD4(values[4], values[5], values[6], values[7]),
+                                                     SIMD4(values[8], values[9], values[10], values[11]),
+                                                     SIMD4(values[12], values[13], values[14], values[15]))))
+            }
+        }
+        guard let groupCount = c.u32(), Int(groupCount) <= c.remaining / 12 else { return rest }
+        guard c.skip(Int(groupCount) * 12) else { return rest }
+        guard c.skip(4) else { return rest }
+        guard let hasOffsets = c.u8() else { return rest }
+        if hasOffsets != 0, !c.skip(boneCount * 76) { return rest }
+        guard let hasIndices = c.u8() else { return rest }
+        if hasIndices != 0, !c.skip(boneCount * 4) { return rest }
+        return rest
     }
 
     private static func skipDataSection(_ c: inout Cursor) -> Bool {
