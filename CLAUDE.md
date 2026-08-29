@@ -605,7 +605,15 @@ vertex shader wants `SKINNING=1`, `BONECOUNT=n`, `g_Bones[]` (`mat4x3`) and the 
 * `MIRAGE_DEBUG=1` logs every encoded pass with its destination, bound slots, blend mode and quad.
 * Do not add AI or assistant attribution to code, comments or commits.
 
-## 9. Reference material
+## 9. License
+
+MIT (see `LICENSE`). Note that the renderer's behaviour was derived by studying
+linux-wallpaperengine (GPL-3.0) and wallpaper-scene-renderer; no code from either is vendored or
+copied here, but if that derivation ever matters to you, revisit the choice. The bundled Homebrew
+dependencies keep their own licenses: glslang (BSD/Apache-2.0), SPIRV-Cross and SPIRV-Tools
+(Apache-2.0).
+
+## 10. Reference material
 
 * **linux-wallpaperengine** (Almamu, C++/OpenGL) is the authoritative reference implementation and
   **wallpaper-scene-renderer** (catsout, C++/Vulkan) is the cross-check. Both are GPL-licensed, so
