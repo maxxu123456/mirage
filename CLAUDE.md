@@ -507,6 +507,11 @@ Both are implemented (`Sources/MirageRender/ParticleLayer.swift`, `Sources/WEKit
 `SceneRenderer.render` calls `textures.advanceVideoTextures(to:)` each frame. Ordinary
 `type: "video"` wallpapers still use `AVPlayerLayer` in the app, which is cheaper.
 
+Two things about it: the decoded texture is `.bgra8Unorm` and needs **no** swizzle, because a Metal
+pixel format describes memory layout and sampling still returns RGBA (verified against
+`Pixel Pokemon`'s palette, not just reasoned about); and the initialiser blocks on track loading, so
+it must stay on the scene-loading queue and off the main thread.
+
 ### 7.3 Scripts (SceneScript)
 
 One `JSContext` per wallpaper. Evaluate WE's `assets/scripts/baseclasses.js`, expose `console`,
@@ -535,21 +540,36 @@ vertex shader wants `SKINNING=1`, `BONECOUNT=n`, `g_Bones[]` (`mat4x3`) and the 
 In priority order, with everything needed already on disk:
 
 1. **Wire SceneScript.** This is the single highest-value remaining item: it turns 39 placeholder
-   clocks into real ones and unblocks 92 scripted objects. A 1325 line JavaScriptCore
-   `ScriptEngine` was written but never reviewed or wired, and is parked outside the repo at
-   `~/Developer/we-macos-reference/unwired/ScriptEngine.swift`. Review it against section 7.3 and
-   move it to `Sources/WEKit/`, or write a fresh one. Then: construct one engine per
-   `SceneRenderer`, call `beginFrame` from `render`, register every `DynamicValue` that carries a
-   `script`, and consult it in `DynamicValue.resolve` (or alongside it) so a scripted value updates
-   per frame. `SceneRenderer.textSpec(for:store:)` is where a scripted clock string arrives.
+   clocks into real ones and unblocks 92 scripted objects. A JavaScriptCore `ScriptEngine` is
+   written but not in the repo, parked at
+   `~/Developer/we-macos-reference/unwired/ScriptEngine.swift`. Its author reports all 77 distinct
+   corpus scripts registering, 55 of them producing a value, and 0.33 ms/frame for all 77 in a debug
+   build, but none of that was checked here. Review it against section 7.3, then move it to
+   `Sources/WEKit/`. Wiring: one engine per `SceneRenderer`, `beginFrame` from `render`, register
+   every `DynamicValue` that carries a `script`, and consult it in `DynamicValue.resolve` so a
+   scripted value updates per frame. `SceneRenderer.textSpec(for:store:)` is where a scripted clock
+   string arrives. Four things its API demands:
+   * `evaluate` takes the **stored default** as `current`, not its own last result, or a script like
+     `return value * 2` compounds every frame.
+   * `nil` from `evaluate` means "nothing new", not failure. Keep the previous value.
+   * Call `setUserProperties` **before** `register`; bound script properties resolve once, at
+     registration.
+   * `JSContext` is not thread safe, so all of it belongs on the render thread. There is no
+     execution timeout either (JSC's is private API), so a runaway script hangs that thread.
 2. **Wire sound.** `WallpaperSoundPlayer` exists. Build one per wallpaper from the scene's `sound`
-   objects, drive `update(time:)` from the render loop, and connect `setPaused` / `setVolume` to
-   `WallpaperController` so the app's mute and pause rules reach it.
+   objects, drive `update(time:)` from the render loop with the same clock the renderer gets, and
+   connect `setPaused` / `setVolume` to `WallpaperController` so the app's mute and pause rules reach
+   it. Note `WESceneObject` parses only `playbackmode` and `volume`, so `mintime` / `maxtime` /
+   `startsilent` have to come out of `object.raw` or be added to `SceneModel`.
 3. **Wire web wallpapers.** `WebWallpaperView` exists. Replace the `case .web` branch in
    `WallpaperController.show` that sets `lastError` with it, and feed it the project's user
-   properties.
+   properties as plain `Any` values, unwrapped (the view wraps them itself). It has no per-frame
+   hook, so `updatePointer` needs a timer, and `teardownViews(for:)` must call `stop()` the way it
+   does for video.
 4. **Puppet warp.** `PuppetModel` parses the mesh and computes bone matrices. The renderer needs a
-   skinned vertex layout, `SKINNING` / `BONECOUNT` combos and a `g_Bones` uniform array.
+   skinned vertex layout, `SKINNING` / `BONECOUNT` combos and a `g_Bones` uniform array. Its bind
+   transforms are read column-major, which no synthetic test can falsify: if the first real puppet
+   renders inside out, transpose there before looking anywhere else.
 5. **Bloom**, then the **audio visualiser** (needs ScreenCaptureKit audio capture and the matching
    permission), then **rope particles**.
 
