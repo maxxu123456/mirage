@@ -233,6 +233,29 @@ public final class SceneRenderer {
 
     // MARK: Layer construction
 
+    /// Objects whose composite another object samples, so they have to be built
+    /// and filled even when they are invisible.
+    ///
+    /// A "composition layer" is exactly that: `visible: false`, no effects of its
+    /// own, existing only so that another object can bind
+    /// `_rt_imageLayerComposite_<id>_a`. Skipping it leaves the dependent layer
+    /// sampling white.
+    private lazy var dependencyTargets: Set<Int> = {
+        var ids = Set<Int>()
+        for object in scene.objects { ids.formUnion(object.dependencies) }
+        // Anything naming a composite directly, wherever in the scene it appears.
+        let text = scene.raw.description
+        var search = text[...]
+        let marker = "_rt_imageLayerComposite_"
+        while let range = search.range(of: marker) {
+            let rest = search[range.upperBound...]
+            let digits = rest.prefix { $0.isNumber || $0 == "-" }
+            if let id = Int(digits) { ids.insert(id) }
+            search = rest
+        }
+        return ids
+    }()
+
     private func buildLayers() {
         let objectsById = Dictionary(scene.objects.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         for object in renderOrder() {
@@ -248,14 +271,18 @@ public final class SceneRenderer {
                 diagnostics.append("[\(object.id)] model not found: \(imagePath)")
                 continue
             }
-            guard let material = locator.material(model.material) else {
+            guard let loaded = locator.material(model.material) else {
                 diagnostics.append("[\(object.id)] material not found: \(model.material)")
                 continue
             }
+            // A material instance replaces slots on the model's material, which is
+            // how an object points itself at another layer's composite.
+            let material = instantiate(loaded, with: object.instance)
             let passthrough = model.passthrough || object.passthrough
             let visibleEffects = object.effects.filter { $0.visible.resolveBool(store) }
-            // Passthrough layers only exist to run effects over the scene behind them.
-            if passthrough && visibleEffects.isEmpty { continue }
+            // Passthrough layers only exist to run effects over the scene behind
+            // them, unless another layer samples this one's composite.
+            if passthrough && visibleEffects.isEmpty && !dependencyTargets.contains(object.id) { continue }
 
             guard let layer = makeLayer(object: object, model: model, material: material,
                                         passthrough: passthrough, objectsById: objectsById) else { continue }
@@ -444,6 +471,41 @@ public final class SceneRenderer {
         }
         for object in scene.objects { visit(object, depth: 0) }
         return order
+    }
+
+    /// Applies an object's material `instance` to the material it loaded.
+    ///
+    /// Per slot, a non-null entry in the instance wins; combos and constants are
+    /// merged with the instance winning. This is the same rule the effect-pass
+    /// override path already uses.
+    private func instantiate(_ material: WEMaterial, with instance: JSON) -> WEMaterial {
+        guard case .object = instance else { return material }
+        guard case .array(let passes) = material.raw["passes"], !passes.isEmpty else { return material }
+        func merged(_ pass: JSON) -> JSON {
+            guard case .object(var fields) = pass else { return pass }
+            for slot in ["textures", "usertextures"] {
+                guard case .array(let replacements) = instance[slot] else { continue }
+                var current: [JSON]
+                if case .array(let existing) = fields[slot] ?? .null { current = existing } else { current = [] }
+                for (index, replacement) in replacements.enumerated() {
+                    if replacement.isNull { continue }
+                    while current.count <= index { current.append(.null) }
+                    current[index] = replacement
+                }
+                fields[slot] = .array(current)
+            }
+            for group in ["combos", "constantshadervalues"] {
+                guard case .object(let additions) = instance[group] else { continue }
+                var current: [String: JSON]
+                if case .object(let existing) = fields[group] ?? .null { current = existing } else { current = [:] }
+                for (key, value) in additions { current[key] = value }
+                fields[group] = .object(current)
+            }
+            return .object(fields)
+        }
+        guard case .object(var raw) = material.raw else { return material }
+        raw["passes"] = .array(passes.map(merged))
+        return WEMaterial(json: .object(raw))
     }
 
     private func makeLayer(object: WESceneObject, model: WEModel, material: WEMaterial,
@@ -1041,15 +1103,18 @@ public final class SceneRenderer {
             case .image(let layer):
                 let visible = scriptedValue(layer.object, "visible")?.bool
                     ?? layer.object.visible.resolveBool(store, default: true)
-                guard visible else { continue }
+                // An invisible layer another one samples still has to fill its
+                // own composite; it is only kept out of the scene draw.
+                let producesComposite = dependencyTargets.contains(layer.object.id)
+                guard visible || producesComposite else { continue }
                 if layer.object.kind == .text { refreshTextLayer(layer) }
                 let transform = SceneGeometry.resolveTransform(of: layer.object, objects: objectsById, store: store)
                 let parallax = parallaxOffset(for: layer.object)
                 layer.updateGeometry(transform: transform, sceneWidth: Float(sceneWidth), sceneHeight: Float(sceneHeight),
                                      projection: projection, parallax: parallax)
                 for pass in layer.passes {
-                    encode(pass: pass, layer: layer, visible: visible, globals: globals,
-                           elapsed: elapsed, commandBuffer: commandBuffer)
+                    encode(pass: pass, layer: layer, visible: visible, producesComposite: producesComposite,
+                           globals: globals, elapsed: elapsed, commandBuffer: commandBuffer)
                 }
             case .particle(let layer):
                 encodeParticles(layer, globals: globals, elapsed: elapsed, dt: dt, projection: projection,
@@ -1146,7 +1211,8 @@ public final class SceneRenderer {
         return wrapper
     }
 
-    private func encode(pass: CompiledPass, layer: ImageLayer, visible: Bool, globals: ShaderValueBag,
+    private func encode(pass: CompiledPass, layer: ImageLayer, visible: Bool,
+                        producesComposite: Bool = false, globals: ShaderValueBag,
                         elapsed: Float, commandBuffer: MTLCommandBuffer) {
         let drawsToScene = pass.isFinalCandidate && visible
         let destinationSurface: LayerSurface = drawsToScene ? .scene : pass.destination
@@ -1154,7 +1220,7 @@ public final class SceneRenderer {
             if debugLogging { print("  [\(layer.object.id)] \(pass.shaderName): NO DESTINATION \(destinationSurface)") }
             return
         }
-        if !drawsToScene && pass.isFinalCandidate && !visible { return }
+        if !drawsToScene && pass.isFinalCandidate && !visible && !producesComposite { return }
 
         // Resolve texture slots.
         var bound: [Int: GPUTexture] = [:]

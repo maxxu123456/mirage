@@ -176,7 +176,10 @@ Other limitations:
 * **`_rt_MipMappedFrameBuffer` is aliased to the scene target with no mip chain**, so shaders that
   sample it by LOD (rough reflections) always read level 0.
 * **Multi-image animated textures** upload only image 0.
-* `instance` / `instanceoverride` on *image* objects are ignored (they matter mainly for particles).
+* An image object's **material `instance`** is applied (it replaces material texture slots per
+  object, which is how a layer points itself at another layer's composite), and an object whose
+  composite something else samples is built and filled even when it is invisible. Without both,
+  `Pixel City` drew a white square where its day/night cross-fade should be.
 * `camerashake`, `camerafade`, `camerapreview` are ignored, they are editor conveniences.
 * Multi-display is implemented but has only been tested on a single display.
 * Particle **child systems** (`children`) and audio-driven emitter rates are not implemented.

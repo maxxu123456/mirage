@@ -169,6 +169,10 @@ public struct WESceneObject: Identifiable {
     public let passthrough: Bool
     public let effects: [WEEffectInstance]
     public let instanceOverride: JSON
+    /// A *material* instance: per-object overrides of the model's material,
+    /// usually to point a slot at another layer's composite. Not to be confused
+    /// with `instanceoverride`, which belongs to particles.
+    public let instance: JSON
     public let animationLayers: JSON
     public let dependencies: [Int]
     public let parent: Int?
@@ -222,6 +226,7 @@ public struct WESceneObject: Identifiable {
         passthrough = json["config"]["passthrough"].bool ?? false
         effects = (json["effects"].array ?? []).map(WEEffectInstance.init(json:))
         instanceOverride = json["instanceoverride"]
+        instance = json["instance"]
         animationLayers = json["animationlayers"]
         dependencies = (json["dependencies"].array ?? []).compactMap(\.int)
         parent = json["parent"].int
