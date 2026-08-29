@@ -227,7 +227,7 @@ public final class ParticleLayer {
                 emitterFired[index] = true
                 spawnCount = emitter.instantaneous
             } else {
-                emitterTimers[index] += dt * emitter.rate * instance.rate
+                emitterTimers[index] += dt * emitter.rate * instance.rate * audioFactor(for: emitter)
                 spawnCount = Int(emitterTimers[index])
                 if spawnCount > 0 { emitterTimers[index] -= Float(spawnCount) }
                 if emitter.oncePerFrame { spawnCount = min(spawnCount, 1) }
@@ -241,6 +241,33 @@ public final class ParticleLayer {
             }
         }
     }
+
+    /// How much the audio spectrum scales this emitter's rate.
+    ///
+    /// Returns 1 for an emitter that does not listen, and also whenever the
+    /// spectrum is entirely silent: a wallpaper whose visualiser is muted or
+    /// whose audio permission was refused should keep emitting at its own rate
+    /// rather than stopping dead.
+    private func audioFactor(for emitter: WEParticleSystem.Emitter) -> Float {
+        guard emitter.audioProcessingMode != 0, !audioSpectrum.isEmpty else { return 1 }
+        let end = min(audioSpectrum.count, max(1, emitter.audioProcessingFrequencyEnd))
+        var sum: Float = 0
+        for i in 0..<end { sum += audioSpectrum[i] }
+        let average = sum / Float(end)
+        guard average > 0 else { return 1 }
+        let low = emitter.audioProcessingBounds.x
+        let high = emitter.audioProcessingBounds.y
+        let span = high - low
+        guard span.isFinite, abs(span) > 1e-6 else { return 1 }
+        let normalised = min(1, max(0, (average - low) / span))
+        let exponent = emitter.audioProcessingExponent.isFinite && emitter.audioProcessingExponent > 0
+            ? emitter.audioProcessingExponent : 1
+        let factor = pow(normalised, exponent)
+        return factor.isFinite ? factor : 1
+    }
+
+    /// The spectrum this layer sees, set by the renderer each frame.
+    var audioSpectrum: [Float] = []
 
     private func spawn(from emitter: WEParticleSystem.Emitter) -> Particle {
         var particle = Particle()

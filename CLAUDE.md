@@ -192,8 +192,10 @@ Other limitations:
 * `camerashake`, `camerafade`, `camerapreview` are ignored, they are editor conveniences.
 * Multi-display is implemented but has only been tested on a single display.
 * Particle **child systems** (`children`) run: a parent's births and deaths seed the child, and a
-  `eventfollow` child is re-seated on the live parent particles each frame. Audio-driven emitter
-  rates are still not implemented, since the spectrum is zeros.
+  `eventfollow` child is re-seated on the live parent particles each frame. An emitter whose
+  `audioprocessingmode` is set follows the music, scaling its rate by the spectrum average over its
+  own frequency range, remapped through `audioprocessingbounds` and its exponent. Silence leaves the
+  rate alone rather than stopping emission, so a muted or unpermitted Mac still gets its particles.
 * Text **background** passes (`opaquebackground`, `padding`) are not drawn; only the glyphs are.
 * `RenderContext`'s pipeline and library caches are never evicted, so memory grows slowly across
   many wallpaper switches within one session (bounded by the number of distinct shader variants used).

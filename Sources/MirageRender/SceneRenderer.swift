@@ -203,7 +203,7 @@ public final class SceneRenderer {
         buildParticleLayers()
         buildBloomLayer()
         buildScripts()
-        usesAudioSpectrum = SceneRenderer.readsAudio(layers)
+        usesAudioSpectrum = SceneRenderer.readsAudio(layers) || SceneRenderer.emittersFollowAudio(orderedLayers)
         try clearInitialTargets()
     }
 
@@ -1087,6 +1087,15 @@ public final class SceneRenderer {
         return Float((now.hour ?? 0) * 60 + (now.minute ?? 0)) / (24 * 60)
     }
 
+    /// Whether any particle emitter follows the music.
+    private static func emittersFollowAudio(_ layers: [SceneLayerRef]) -> Bool {
+        for entry in layers {
+            guard case .particle(let layer) = entry else { continue }
+            if layer.system.emitters.contains(where: { $0.audioProcessingMode != 0 }) { return true }
+        }
+        return false
+    }
+
     /// Whether any compiled pass declares one of the spectrum uniforms.
     private static func readsAudio(_ layers: [ImageLayer]) -> Bool {
         for layer in layers {
@@ -1702,6 +1711,8 @@ public final class SceneRenderer {
         guard layer.object.visible.resolveBool(store, default: true) else { return }
 
         let transform = SceneGeometry.resolveTransform(of: layer.object, objects: objectsById, store: store)
+        // An emitter can follow the music, so it needs this frame's spectrum.
+        layer.audioSpectrum = audioSpectrumLeft
         if layer.recordEvents { layer.beginEvents() }
         layer.update(dt: dt, time: elapsed, sceneWidth: Float(sceneWidth), sceneHeight: Float(sceneHeight),
                      projection: projection, transform: transform,

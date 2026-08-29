@@ -107,6 +107,14 @@ public struct WEParticleSystem {
         public let maxPeriodicDelay: Float
         public let minPeriodicDuration: Float
         public let maxPeriodicDuration: Float
+        /// Non-zero when the emitter's rate follows the audio spectrum.
+        public let audioProcessingMode: Int
+        /// The range of the spectrum average that maps onto no emission through
+        /// full emission.
+        public let audioProcessingBounds: SIMD2<Float>
+        public let audioProcessingExponent: Float
+        /// How many of the 64 bands, from the bottom, the emitter listens to.
+        public let audioProcessingFrequencyEnd: Int
 
         /// bit 1: at most one particle per frame, bit 2: emit in random bursts.
         public var oncePerFrame: Bool { flags & 2 != 0 }
@@ -124,6 +132,10 @@ public struct WEParticleSystem {
             distanceMax = WEParticleSystem.spread(json["distancemax"], default: 0)
             sign = json["sign"].vec3 ?? .zero
             rate = json["rate"].float ?? 0
+            audioProcessingMode = json["audioprocessingmode"].int ?? 0
+            audioProcessingBounds = json["audioprocessingbounds"].vec2 ?? SIMD2(0, 1)
+            audioProcessingExponent = json["audioprocessingexponent"].float ?? 1
+            audioProcessingFrequencyEnd = json["audioprocessingfrequencyend"].int ?? 15
             instantaneous = json["instantaneous"].int ?? 0
             speedMin = json["speedmin"].float ?? 0
             speedMax = json["speedmax"].float ?? 0
