@@ -27,8 +27,23 @@ public final class SceneRenderer {
     /// Geometry stays in scene units, so only the targets shrink and the image is
     /// the same one, drawn at the size it will actually be seen at.
     public private(set) var renderScale: Float = 1
-    public var renderWidth: Int { scaled(sceneWidth) }
-    public var renderHeight: Int { scaled(sceneHeight) }
+    /// The part of the scene the display actually shows, in scene units.
+    ///
+    /// `present` covers the target and crops the axis whose aspect differs, so
+    /// on a 16:9 screen a wallpaper authored at 21:9 has a quarter of every
+    /// full-screen pass rendered and then thrown away. Cropping here instead
+    /// costs nothing visually, because those pixels were never on screen.
+    public private(set) var visibleWidth: Int
+    public private(set) var visibleHeight: Int
+    public var renderWidth: Int { scaled(visibleWidth) }
+    public var renderHeight: Int { scaled(visibleHeight) }
+
+    /// Rounds a cropped extent so that what is removed splits evenly either side.
+    static func centredCrop(_ extent: Float, of whole: Int) -> Int {
+        var value = max(1, min(whole, Int(extent.rounded())))
+        if (whole - value) % 2 != 0 { value = max(1, value - 1) }
+        return value
+    }
 
     /// A scene-unit length in target pixels, never smaller than one.
     func scaled(_ value: Int) -> Int {
@@ -71,8 +86,14 @@ public final class SceneRenderer {
     /// `outputSize` is the size the wallpaper will be displayed at, in pixels.
     /// Passing it lets a scene authored larger than the screen render at the
     /// screen's resolution instead of its own.
+    /// `outputSize` is the size the wallpaper will be displayed at, in pixels.
+    /// Its aspect is always used, to crop away the part of the scene the display
+    /// will never show. Its resolution is only used when `scaleToOutput` is set,
+    /// because rendering a scene at less than its authored resolution is
+    /// visibly softer.
     public init(project: WEProject, locator: AssetLocator, context: RenderContext? = nil,
-                propertyOverrides: [String: JSON] = [:], outputSize: (Int, Int)? = nil) throws {
+                propertyOverrides: [String: JSON] = [:], outputSize: (Int, Int)? = nil,
+                scaleToOutput: Bool = false) throws {
         let ctx = try context ?? RenderContext()
         self.context = ctx
         self.project = project
@@ -89,13 +110,31 @@ public final class SceneRenderer {
         let size = SceneRenderer.resolveSceneSize(scene: scene, store: store)
         self.sceneWidth = size.0
         self.sceneHeight = size.1
+        self.visibleWidth = size.0
+        self.visibleHeight = size.1
         if let outputSize, outputSize.0 > 0, outputSize.1 > 0 {
-            // `present` covers the target and crops the axis whose aspect differs,
-            // so the axis that survives is the one that needs the pixels: taking
-            // the larger ratio keeps that axis at native resolution, and the
-            // cropped one is only ever oversampled. Never upscale, because a
-            // scene smaller than the display is already at its texture's size.
-            let cover = max(Float(outputSize.0) / Float(size.0), Float(outputSize.1) / Float(size.1))
+            // Exactly the region `present` would have kept: it crops symmetrically
+            // about the centre, so a centred crop here is the same image.
+            let outAspect = Float(outputSize.0) / Float(outputSize.1)
+            if outAspect.isFinite, outAspect > 0 {
+                let w = min(Float(size.0), Float(size.1) * outAspect)
+                let h = min(Float(size.1), Float(size.0) / outAspect)
+                if w.isFinite, h.isFinite, w >= 1, h >= 1 {
+                    // The crop is centred, so it only lands on whole pixels when
+                    // the amount removed is even. Rounding to that keeps every
+                    // triangle on the pixel centres it had before, which is what
+                    // makes cropping cost nothing at all rather than nearly
+                    // nothing: at native scale the frame comes out identical.
+                    self.visibleWidth = SceneRenderer.centredCrop(w, of: size.0)
+                    self.visibleHeight = SceneRenderer.centredCrop(h, of: size.1)
+                }
+            }
+        }
+        if scaleToOutput, let outputSize, outputSize.0 > 0, outputSize.1 > 0 {
+            // The visible region is now exactly the target's aspect, so both
+            // ratios agree and either will do. Never upscale: a scene smaller
+            // than the display is already at its textures' size.
+            let cover = Float(outputSize.0) / Float(visibleWidth)
             if cover.isFinite, cover > 0, cover < 1 { self.renderScale = cover }
         }
 
@@ -429,12 +468,12 @@ public final class SceneRenderer {
         if let texture = objectTexture {
             size = SIMD2(texture.resolution.z, texture.resolution.w)
         } else if model.solidLayer && size == SIMD2(0, 0) {
-            size = SIMD2(Float(sceneWidth), Float(sceneHeight))
+            size = SIMD2(Float(visibleWidth), Float(visibleHeight))
         } else if size.x == 0 || size.y == 0, let w = model.width, let h = model.height {
             size = SIMD2(Float(w), Float(h))
         }
         if model.fullscreen {
-            size = SIMD2(Float(sceneWidth), Float(sceneHeight))
+            size = SIMD2(Float(visibleWidth), Float(visibleHeight))
         }
         size = SIMD2(size.x.isFinite ? min(Float(SceneRenderer.maximumRenderDimension), max(1, size.x)) : 1,
                      size.y.isFinite ? min(Float(SceneRenderer.maximumRenderDimension), max(1, size.y)) : 1)
@@ -882,7 +921,7 @@ public final class SceneRenderer {
             encoder.endEncoding()
         }
 
-        let projection = SceneGeometry.sceneProjection(width: Float(sceneWidth), height: Float(sceneHeight),
+        let projection = SceneGeometry.sceneProjection(width: Float(visibleWidth), height: Float(visibleHeight),
                                                        nearZ: scene.camera.nearZ, farZ: scene.camera.farZ,
                                                        zoom: scene.general.zoom.resolveFloat(store, default: 1))
         // Video-backed textures decode on their own queue; pick up their newest frame.
@@ -1325,7 +1364,7 @@ public final class SceneRenderer {
               let pipeline = try? context.blitPipeline(pixelFormat: target.pixelFormat) else { return }
         encoder.label = "mirage.present"
         // "default" WE scaling: cover the target, cropping the axis whose aspect differs.
-        let sceneAspect = Float(sceneWidth) / Float(sceneHeight)
+        let sceneAspect = Float(visibleWidth) / Float(visibleHeight)
         let targetAspect = Float(target.width) / Float(target.height)
         var scale = SIMD2<Float>(1, 1)
         if targetAspect > sceneAspect {
@@ -1404,9 +1443,14 @@ public final class SceneRenderer {
 
     /// Human-readable summary of what was built, for `wetool`.
     public var summary: String {
-        var lines: [String] = [renderScale < 1
-            ? "scene \(sceneWidth)x\(sceneHeight) rendered at \(renderWidth)x\(renderHeight), \(layers.count) image layers"
-            : "scene \(sceneWidth)x\(sceneHeight), \(layers.count) image layers"]
+        var detail = "scene \(sceneWidth)x\(sceneHeight)"
+        if visibleWidth != sceneWidth || visibleHeight != sceneHeight {
+            detail += " cropped to \(visibleWidth)x\(visibleHeight)"
+        }
+        if renderWidth != visibleWidth || renderHeight != visibleHeight {
+            detail += " rendered at \(renderWidth)x\(renderHeight)"
+        }
+        var lines: [String] = [detail + ", \(layers.count) image layers"]
         for layer in layers {
             let passNames = layer.passes.map { pass -> String in
                 let dest: String

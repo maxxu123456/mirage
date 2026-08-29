@@ -82,6 +82,14 @@ public final class ShaderCompiler {
         public let glslFragment: String
         /// HLSL-compatibility edits the repair pass had to make, for diagnostics.
         public var repairs: [String] = []
+        /// The compiler's own cache key for this program: a hash of the stage-1
+        /// GLSL it was built from, and therefore a stable identity for it.
+        ///
+        /// It exists so the render loop can key its pipeline cache without
+        /// re-hashing the MSL, which it would otherwise do for every pass of
+        /// every frame. Defaulted, so a program decoded from an older disk cache
+        /// still loads; such a program falls back to hashing once.
+        public var cacheKey: String = ""
 
         public func member(_ name: String, in stage: Stage) -> UniformMember? {
             stage.uniforms?.members.first { $0.name == name }
@@ -117,7 +125,11 @@ public final class ShaderCompiler {
         let f1 = ShaderPreprocessor.stage1(source.fragment, combos: combos, stage: .fragment)
         let key = ShaderCompiler.hash(ShaderCompiler.cacheVersion + "\u{0}" + v1 + "\u{1}" + f1)
         if let p = memoryCache[key] { return p }
-        if let p = loadCached(key) { memoryCache[key] = p; return p }
+        if var p = loadCached(key) {
+            p.cacheKey = key
+            memoryCache[key] = p
+            return p
+        }
 
         let vp = try preprocess(v1, stage: GLSLANG_STAGE_VERTEX, label: source.name + ".vert")
         let fp = try preprocess(f1, stage: GLSLANG_STAGE_FRAGMENT, label: source.name + ".frag")
@@ -151,6 +163,7 @@ public final class ShaderCompiler {
         var program = Program(vertex: vstage, fragment: fstage, attributeLocations: fin.attributeLocations,
                               attributeTypes: fin.attributeTypes, glslVertex: vertexSource, glslFragment: fragmentSource)
         program.repairs = repairs
+        program.cacheKey = key
         memoryCache[key] = program
         storeCached(key, program)
         return program

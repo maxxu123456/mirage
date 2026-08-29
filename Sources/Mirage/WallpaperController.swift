@@ -196,12 +196,13 @@ final class WallpaperController: ObservableObject {
             // the wallpaper was authored at, which is much cheaper on a wallpaper
             // authored larger than the screen, at the cost of some sharpness.
             var outputSize: (Int, Int)?
-            if settings.renderAtDisplayResolution, let screen = screen(for: displayId) {
+            if let screen = screen(for: displayId) {
                 let scale = screen.backingScaleFactor
                 let pixels = (Int((screen.frame.width * scale).rounded()),
                               Int((screen.frame.height * scale).rounded()))
                 if pixels.0 > 0, pixels.1 > 0 { outputSize = pixels }
             }
+            let scaleToOutput = settings.renderAtDisplayResolution
             loaderQueue.async { [weak self] in
                 let outcome: Result<SceneRenderer, Error>
                 do {
@@ -210,7 +211,7 @@ final class WallpaperController: ObservableObject {
                                                    assetsDirectories: AssetLocator.defaultAssetsDirectories(),
                                                    fallbackDirectory: ResourceLocator.fallbackAssetsDirectory())
                     outcome = .success(try SceneRenderer(project: project, locator: locator, context: context,
-                                                          outputSize: outputSize))
+                                                          outputSize: outputSize, scaleToOutput: scaleToOutput))
                 } catch {
                     outcome = .failure(error)
                 }

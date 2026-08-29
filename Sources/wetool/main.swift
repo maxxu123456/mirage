@@ -297,8 +297,8 @@ case "render":
     let (project, locator) = makeLocator(rest[0])
     // Like the app, the scene renders at the resolution it was authored at unless
     // --display-res asks for the output size instead.
-    let renderer = try SceneRenderer(project: project, locator: locator,
-                                     outputSize: rest.contains("--display-res") ? size : nil)
+    let renderer = try SceneRenderer(project: project, locator: locator, outputSize: size,
+                                     scaleToOutput: rest.contains("--display-res"))
     let setupMs = Date().timeIntervalSince(setupStart) * 1000
     print(renderer.summary)
 

@@ -149,21 +149,22 @@ public final class RenderContext {
     /// Pipeline for a compiled WE shader program.
     public func pipeline(program: ShaderCompiler.Program, layout: VertexLayout, pixelFormat: MTLPixelFormat,
                          blend: BlendState, label: String) throws -> MTLRenderPipelineState {
-        let vertexHash = ShaderCompiler.hash(program.vertex.msl)
-        let fragmentHash = ShaderCompiler.hash(program.fragment.msl)
-        let layoutSignature = layout.attributes
-            .sorted { $0.location < $1.location }
-            .map { "\($0.location):\($0.format.rawValue):\($0.offset)" }
-            .joined(separator: ",")
+        // The identity of a program is its compiler cache key. Hashing the MSL
+        // here instead would re-hash roughly 20 KB per pass per frame, which
+        // measured as the largest single piece of CPU work in the frame.
+        let identity = program.cacheKey.isEmpty
+            ? ShaderCompiler.hash(program.vertex.msl) + ShaderCompiler.hash(program.fragment.msl)
+            : program.cacheKey
         let key = [
-            vertexHash, fragmentHash,
-            program.vertex.entryPoint, program.fragment.entryPoint,
-            layout.name, String(layout.stride), layoutSignature, String(pixelFormat.rawValue),
+            identity, layout.name, String(pixelFormat.rawValue),
             blend.mode.rawValue, blend.writesAlpha ? "a" : "-",
         ].joined(separator: "|")
         lock.lock(); defer { lock.unlock() }
         if let p = pipelineCache[key] { return p }
 
+        // Only reached once per distinct pipeline, so the hashes here are free.
+        let vertexHash = ShaderCompiler.hash(program.vertex.msl)
+        let fragmentHash = ShaderCompiler.hash(program.fragment.msl)
         let vlib = try makeLibrary(source: program.vertex.msl, key: "v\(vertexHash)")
         let flib = try makeLibrary(source: program.fragment.msl, key: "f\(fragmentHash)")
         guard let vfn = vlib.makeFunction(name: program.vertex.entryPoint) else {
