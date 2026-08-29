@@ -101,7 +101,6 @@ and their effects render; these do not:
 | Not implemented | What you notice |
 |---|---|
 | Media integration | A wallpaper that shows the song you are playing shows its idle layout instead |
-| Puppet warp | A skinned layer is drawn without its animation |
 | Rope particles | Rope and rope trail emitters draw as ordinary sprites |
 
 Particles, text layers, embedded video textures, sound and scripts all work, so clocks show the real

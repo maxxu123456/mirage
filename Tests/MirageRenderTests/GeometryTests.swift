@@ -181,12 +181,14 @@ final class GeometryTests: XCTestCase {
                   arrayLength: Int.max, arrayStride: Int.max, matrixStride: Int.max),
         ])
         let writer = UniformWriter(block: block)
-        XCTAssertEqual(writer.byteCount, 4096)
+        // Clamped, not honoured: the cap is generous enough for a large bone
+        // palette and far short of what a corrupt reflection would ask for.
+        XCTAssertEqual(writer.byteCount, 64 * 1024)
         var bag = ShaderValueBag()
         bag.set("bad", 1 as Float)
         var bytes: [UInt8] = []
         writer.write(bag, into: &bytes)
-        XCTAssertEqual(bytes.count, 4096)
+        XCTAssertEqual(bytes.count, 64 * 1024)
         XCTAssertTrue(bytes.allSatisfy { $0 == 0 })
     }
 

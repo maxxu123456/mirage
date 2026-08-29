@@ -109,8 +109,15 @@ public struct ShaderValueBag {
 /// uniform block. Offsets, array strides and matrix strides all come from the
 /// reflection, so the layout always matches the generated MSL struct.
 public struct UniformWriter {
-    // Metal's setVertexBytes/setFragmentBytes inline-data limit is 4 KiB.
-    static let maximumByteCount = 4 * 1024
+    /// Metal's `setVertexBytes` / `setFragmentBytes` inline limit. A block over
+    /// this goes through a buffer instead of being truncated: a puppet with
+    /// enough bones exceeds it, and silently dropping the tail of `g_Bones`
+    /// collapses the mesh.
+    public static let inlineByteLimit = 4 * 1024
+    /// A block larger than this is clamped rather than allocated: a wallpaper's
+    /// shader is third-party input and a corrupt reflection must not turn into a
+    /// huge allocation. 64 KiB leaves room for a puppet with a thousand bones.
+    static let maximumByteCount = 64 * 1024
     public let block: ShaderCompiler.UniformBlock
     /// Uniform name → member, precomputed.
     private let members: [String: ShaderCompiler.UniformMember]

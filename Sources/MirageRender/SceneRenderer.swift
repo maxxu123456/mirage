@@ -606,10 +606,6 @@ public final class SceneRenderer {
             diagnostics.append("[\(object.id)] puppet could not be parsed: \(path)")
             return
         }
-        // Drawing the mesh is off unless asked for. It is correct on the one
-        // wallpaper it has been verified against and makes some layers of
-        // another vanish, and a missing layer is worse than the flat quad this
-        // renderer has always drawn. See section 7.4.
         guard SceneRenderer.puppetMeshEnabled else { return }
         // Pack the parsed vertex and scale its texture coordinates into the
         // padded texture the way the quad path scales its own. A mesh sampling
@@ -1087,6 +1083,35 @@ public final class SceneRenderer {
         return Float((now.hour ?? 0) * 60 + (now.minute ?? 0)) / (24 * 60)
     }
 
+    private enum UniformStage { case vertex, fragment }
+
+    /// Binds a constant block, inline when it fits and through a buffer when it
+    /// does not.
+    ///
+    /// A puppet's bone palette costs 64 bytes a bone, so a rig of about sixty
+    /// pushes the block past Metal's 4 KiB inline limit. Truncating there would
+    /// zero the tail of `g_Bones` and collapse the mesh, so the large case gets
+    /// a real buffer instead.
+    private func setUniforms(_ bytes: [UInt8], on encoder: MTLRenderCommandEncoder,
+                             index: Int, stage: UniformStage) {
+        if bytes.count <= UniformWriter.inlineByteLimit {
+            bytes.withUnsafeBytes { raw in
+                guard let base = raw.baseAddress else { return }
+                switch stage {
+                case .vertex: encoder.setVertexBytes(base, length: raw.count, index: index)
+                case .fragment: encoder.setFragmentBytes(base, length: raw.count, index: index)
+                }
+            }
+            return
+        }
+        guard let buffer = context.device.makeBuffer(bytes: bytes, length: bytes.count,
+                                                     options: .storageModeShared) else { return }
+        switch stage {
+        case .vertex: encoder.setVertexBuffer(buffer, offset: 0, index: index)
+        case .fragment: encoder.setFragmentBuffer(buffer, offset: 0, index: index)
+        }
+    }
+
     /// Whether any particle emitter follows the music.
     private static func emittersFollowAudio(_ layers: [SceneLayerRef]) -> Bool {
         for entry in layers {
@@ -1111,8 +1136,8 @@ public final class SceneRenderer {
     // MARK: Bloom
 
     /// Whether a puppet layer draws its skinned mesh instead of a flat quad.
-    /// Off by default while the mesh path is finished; see section 7.4.
-    public static var puppetMeshEnabled = ProcessInfo.processInfo.environment["MIRAGE_PUPPET"] != nil
+    /// Set `MIRAGE_NO_PUPPET` to fall back to the flat quad.
+    public static var puppetMeshEnabled = ProcessInfo.processInfo.environment["MIRAGE_NO_PUPPET"] == nil
 
     /// The id of the synthetic object that carries the bloom chain. Negative so
     /// it can never collide with a real scene object.
@@ -1568,18 +1593,14 @@ public final class SceneRenderer {
             var bytes = [UInt8](repeating: 0, count: writer.byteCount)
             writer.write(bag, into: &bytes)
             if (0..<BufferIndex.zeroFill).contains(writer.block.bufferIndex) {
-                bytes.withUnsafeBytes { raw in
-                    if let base = raw.baseAddress { encoder.setVertexBytes(base, length: raw.count, index: writer.block.bufferIndex) }
-                }
+                setUniforms(bytes, on: encoder, index: writer.block.bufferIndex, stage: .vertex)
             }
         }
         if let writer = pass.uniformWriterFragment {
             var bytes = [UInt8](repeating: 0, count: writer.byteCount)
             writer.write(bag, into: &bytes)
             if (0..<BufferIndex.zeroFill).contains(writer.block.bufferIndex) {
-                bytes.withUnsafeBytes { raw in
-                    if let base = raw.baseAddress { encoder.setFragmentBytes(base, length: raw.count, index: writer.block.bufferIndex) }
-                }
+                setUniforms(bytes, on: encoder, index: writer.block.bufferIndex, stage: .fragment)
             }
         }
 
