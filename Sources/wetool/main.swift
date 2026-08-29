@@ -415,6 +415,9 @@ case "render":
     if let forced = stringOption(rest, "--force-visible") {
         renderer.forceVisibleObjects = Set(forced.split(separator: ",").compactMap { Int($0) })
     }
+    if let hidden = stringOption(rest, "--hide") {
+        renderer.forceHiddenObjects = Set(hidden.split(separator: ",").compactMap { Int($0) })
+    }
     let setupMs = Date().timeIntervalSince(setupStart) * 1000
     print(renderer.summary)
 

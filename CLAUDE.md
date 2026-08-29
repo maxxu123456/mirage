@@ -206,48 +206,57 @@ Other limitations:
 
 ### Performance
 
-Release build, Apple Silicon, presented at 3008x1692, measured with
-`wetool render --frames 40` (which reads the frame back only once, so the numbers are the frame
-itself). "display res" is the optional setting described below.
+Release build, Apple Silicon, presented at 3008x1692, measured with `wetool render --frames 25` on an
+otherwise idle machine. "display res" is the optional setting described below. The first column is
+where this started.
 
-| Wallpaper | Layers | Scene size | Native | Display res |
+| Wallpaper | Layers | Was | Native | Display res |
 |---|---|---|---|---|
-| Letter | 6 | 3840x2160 | 22 ms (45 fps) | 18 ms (54 fps) |
-| Cozy, LoFi Shop | 20 | 3840x2160 | 63 ms (16 fps) | 50 ms (20 fps) |
-| Sunset Cat | 36 | 3840x2160 | 65 ms (15 fps) | 55 ms (18 fps) |
-| Purple Bedroom | 37 | 3840x2160 | 128 ms (8 fps) | 95 ms (11 fps) |
-| Pixel City | 38 | 5120x2160 | 183 ms (5 fps) | 121 ms (8 fps) |
+| Letter | 6 | 22 ms (45 fps) | 6.6 ms (152 fps) | 3.2 ms (314 fps) |
+| Cozy, LoFi Shop | 20 | 63 ms (16 fps) | 11.0 ms (91 fps) | 7.7 ms (129 fps) |
+| Sunset Cat | 36 | 65 ms (15 fps) | 9.0 ms (111 fps) | 8.5 ms (118 fps) |
+| Purple Bedroom | 37 | 128 ms (8 fps) | 24.6 ms (41 fps) | 12.4 ms (80 fps) |
+| Pixel City | 40 | 183 ms (5 fps) | 51.0 ms (20 fps) | 29.9 ms (33 fps) |
 
-**This is GPU bound, not CPU bound**, which contradicts what this file used to say. `wetool render`
-reports GPU time alongside wall time, and on Pixel City the GPU accounts for 180 ms of the 183. So
-merging the per-pass command encoders, long assumed to be the first thing to fix, would buy almost
-nothing. The cost is pixels: roughly 90 passes, most of them reading and writing a full-size
-composite, on a 5120x2160 scene.
+Everything clears the default 30 fps cap. What got it there:
 
-What has been done:
+* **The pipeline cache was keyed on a hash of the shader source**, recomputed for every pass of every
+  frame: roughly 20 KB of MSL hashed 90 times a frame. A compiled program now carries the compiler's
+  own cache key, which is already a hash of the GLSL it was built from.
+* **The scene was rendered at its authoring resolution and then cropped by the present pass.** A
+  wallpaper authored at 21:9 had a quarter of every full-screen pass drawn and thrown away. The
+  renderer crops to what the display will show, rounded so the removed amount splits evenly either
+  side, which keeps every triangle on the pixel centres it had before: at native scale the frame
+  comes out identical.
+* The offscreen path stopped allocating a 20 MB target and reading it back on every frame, which is
+  what the old numbers in this table were mostly measuring.
+* A scene that does not read the audio spectrum no longer boxes six arrays into the uniform
+  dictionary every frame.
 
-* The offscreen path no longer allocates a 20 MB target and reads it back on every frame, which was
-  most of what the old numbers in this table were measuring.
+**Pixel City is now bound by the wallpaper's own shader, not by the renderer.** Hiding two objects
+takes it from 51.0 ms to 8.6: both are `Adjustable Composition Layer`s running
+`workshop/2906937488/effects/procedural_noise`, Worley noise with ten fractal octaves, full screen.
+That is 83% of the frame in two fragment shaders, so merging command encoders (measured at 27 us of
+GPU each, and 518 passes across the corpus would collapse to 444) would buy under half a millisecond
+of it. Only fewer pixels help, which is what the setting below does. `wetool render --hide <ids>` is
+how that was measured.
+
 * **Render at display resolution** (`AppSettings.renderAtDisplayResolution`, off by default;
   `wetool render --display-res`). A wallpaper is authored at its own resolution and every pass costs
-  that many pixels no matter how large the display is. The setting scales every render target by
-  `max(outputW / sceneW, outputH / sceneH)`, capped at 1. `max`, not `min`, because `present` covers
-  the target and crops the axis whose aspect differs, so the surviving axis is the one that needs
-  the pixels. Geometry stays in scene units, so only the targets shrink. It is **off by default
-  because it is visibly softer**: every layer's composite is resampled at the smaller size and the
-  detail is gone by the time it reaches the screen, which is obvious on pixel art. Compare a crop of
-  `wetool render` with and without it before assuming it is free.
+  that many pixels no matter how large the display is. The setting scales every render target by the
+  cover ratio, capped at 1, leaving geometry in scene units. It is **off by default because it is
+  visibly softer**: every layer's composite is resampled at the smaller size. Compare a 1:1 crop with
+  and without it before assuming it is free.
 
 What is left, in the order worth trying:
 
-1. **Fewer passes.** A pass whose material is a plain `passthrough` with no effect could be elided
+1. **Half resolution for expensive full-screen effect layers.** The two layers above are low
+   frequency noise, so drawing them at half size and letting the composite upscale would be close to
+   invisible and four times cheaper. This is the only remaining lever on the worst case.
+2. **Fewer passes.** A pass whose material is a plain `passthrough` with no effect could be elided
    into its consumer instead of round-tripping a full-size composite.
-2. **Smaller composites.** A layer whose content occupies a fraction of its target still pays for
-   the whole thing, and both composites are allocated for every layer whether or not the chain
-   ping-pongs.
 3. Uniform buffers are still re-packed from a dictionary for every pass every frame
-   (`ShaderValueBag` -> `UniformWriter`). This is CPU work, so it only matters once the GPU is not
-   the wall.
+   (`ShaderValueBag` -> `UniformWriter`). CPU work, so it only matters once the GPU is not the wall.
 
 ## 4. Wallpaper Engine formats
 

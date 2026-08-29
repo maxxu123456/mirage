@@ -113,6 +113,8 @@ public final class SceneRenderer {
     /// Object ids forced visible whatever the scene says, for debugging a layer
     /// that is hidden by default.
     public var forceVisibleObjects: Set<Int> = []
+    /// Object ids forced hidden, for measuring what a layer costs.
+    public var forceHiddenObjects: Set<Int> = []
 
     /// Normalised pointer position, x right / y down, as `g_PointerPosition` expects.
     public var pointerPosition = SIMD2<Float>(0.5, 0.5)
@@ -1372,9 +1374,15 @@ public final class SceneRenderer {
         for entry in orderedLayers {
             switch entry {
             case .image(let layer):
-                let visible = forceVisibleObjects.contains(layer.object.id) ? true
-                    : (scriptedValue(layer.object, "visible")?.bool
-                        ?? layer.object.visible.resolveBool(store, default: true))
+                let visible: Bool
+                if forceHiddenObjects.contains(layer.object.id) {
+                    visible = false
+                } else if forceVisibleObjects.contains(layer.object.id) {
+                    visible = true
+                } else {
+                    visible = scriptedValue(layer.object, "visible")?.bool
+                        ?? layer.object.visible.resolveBool(store, default: true)
+                }
                 // An invisible layer another one samples still has to fill its
                 // own composite; it is only kept out of the scene draw.
                 let producesComposite = dependencyTargets.contains(layer.object.id)
