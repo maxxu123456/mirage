@@ -40,6 +40,10 @@ final class WebWallpaperView: NSView, WKNavigationDelegate {
     private var pointer = CGPoint(x: 0.5, y: 0.5)
     private var lastPointerSend: CFTimeInterval = 0
     private var isStopped = false
+    /// A web view has no per-frame hook to sample the cursor from, the way the
+    /// scene view samples it in `draw`, so it polls instead. `updatePointer`
+    /// throttles and ignores an unmoved cursor, so an idle desktop costs nothing.
+    private var pointerTimer: Timer?
 
     private static let messageHandlerName = "mirage"
 
@@ -117,7 +121,38 @@ final class WebWallpaperView: NSView, WKNavigationDelegate {
     func setPaused(_ paused: Bool) {
         guard paused != self.paused else { return }
         self.paused = paused
+        if paused { stopPointerTimer() } else { startPointerTimer() }
         evaluate("window.__mirage.setPaused(\(paused ? "true" : "false"));")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil, !paused, !isStopped { startPointerTimer() } else { stopPointerTimer() }
+    }
+
+    private func startPointerTimer() {
+        guard pointerTimer == nil, !isStopped else { return }
+        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            self?.samplePointer()
+        }
+        // The desktop has no run loop activity of its own, so the timer has to
+        // keep firing through menu tracking and window drags.
+        RunLoop.main.add(timer, forMode: .common)
+        pointerTimer = timer
+    }
+
+    private func stopPointerTimer() {
+        pointerTimer?.invalidate()
+        pointerTimer = nil
+    }
+
+    private func samplePointer() {
+        guard let window, !isStopped else { return }
+        let frame = window.frame
+        guard frame.width > 0, frame.height > 0 else { return }
+        let point = NSEvent.mouseLocation
+        updatePointer(CGPoint(x: (point.x - frame.minX) / frame.width,
+                              y: 1 - (point.y - frame.minY) / frame.height))
     }
 
     func setMuted(_ muted: Bool) {
@@ -156,6 +191,7 @@ final class WebWallpaperView: NSView, WKNavigationDelegate {
     func stop() {
         guard !isStopped else { return }
         isStopped = true
+        stopPointerTimer()
         webView.navigationDelegate = nil
         bridge.view = nil
         let controller = webView.configuration.userContentController
@@ -166,6 +202,8 @@ final class WebWallpaperView: NSView, WKNavigationDelegate {
             webView.load(URLRequest(url: blank))
         }
     }
+
+    deinit { pointerTimer?.invalidate() }
 
     // MARK: Navigation
 

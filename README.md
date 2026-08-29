@@ -5,7 +5,8 @@ animated wallpapers behind your desktop icons.
 
 Wallpaper Engine is Windows only, but its Workshop content is just files. Mirage reads those files
 directly: "scene" wallpapers (`scene.pkg`) are rendered by a Metal reimplementation of Wallpaper
-Engine's renderer, and video, image and GIF wallpapers play natively.
+Engine's renderer, web wallpapers run in a web view, and video, image and GIF wallpapers play
+natively.
 
 ## What it does
 
@@ -15,6 +16,7 @@ Engine's renderer, and video, image and GIF wallpapers play natively.
   animation), sprite sheet animation, embedded video textures, blend modes, mouse parallax, and the
   wallpaper's own user properties.
 * Plays a scene wallpaper's **sound layers**, with the app's mute and volume.
+* Runs **web wallpapers** in a web view, with their user properties and cursor tracking.
 * Plays **video wallpapers** (`.mp4`, `.mov`, `.m4v`) with gapless looping, and **image / GIF**
   wallpapers.
 * **One wallpaper per display**, remembered across restarts.
@@ -97,7 +99,6 @@ and their effects render; these do not:
 | Media integration | A wallpaper that shows the song you are playing shows its idle layout instead |
 | Puppet warp | A skinned layer is drawn without its animation |
 | Audio visualiser | Audio reactive layers stay still |
-| Web wallpapers | Not supported |
 | Rope particles | Rope and rope trail emitters draw as ordinary sprites |
 
 Particles, text layers, embedded video textures, sound and scripts all work, so clocks show the real

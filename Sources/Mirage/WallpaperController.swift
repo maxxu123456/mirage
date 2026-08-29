@@ -26,6 +26,7 @@ final class WallpaperController: ObservableObject {
     private var sceneViews: [String: SceneWallpaperView] = [:]
     private var videoViews: [String: VideoWallpaperView] = [:]
     private var imageViews: [String: ImageWallpaperView] = [:]
+    private var webViews: [String: WebWallpaperView] = [:]
     /// Building a `SceneRenderer` compiles shaders and uploads textures, which takes
     /// seconds; it runs here so the UI never blocks, and `loadGeneration` discards a
     /// result whose display has since been reassigned.
@@ -57,6 +58,7 @@ final class WallpaperController: ObservableObject {
             .sink { [weak self] muted, volume in
                 self?.videoViews.values.forEach { $0.setMuted(muted, volume: Float(volume)) }
                 self?.sceneViews.values.forEach { $0.setMuted(muted, volume: Float(volume)) }
+                self?.webViews.values.forEach { $0.setMuted(muted) }
             }
             .store(in: &cancellables)
     }
@@ -148,6 +150,8 @@ final class WallpaperController: ObservableObject {
         videoViews.removeValue(forKey: displayId)
         sceneViews[displayId]?.stop()
         sceneViews.removeValue(forKey: displayId)
+        webViews[displayId]?.stop()
+        webViews.removeValue(forKey: displayId)
         imageViews.removeValue(forKey: displayId)
     }
 
@@ -221,9 +225,17 @@ final class WallpaperController: ObservableObject {
             }
             return
         case .web:
-            lastError = "Web wallpapers are not supported yet"
-            window.orderOut(nil)
-            return
+            // The wallpaper's user properties reach the page as plain values;
+            // the view wraps them the way Wallpaper Engine's JS API expects.
+            var properties: [String: Any] = [:]
+            if let directory = item.projectDirectory, let project = try? WEProject.load(directory: directory) {
+                for definition in project.properties {
+                    if let value = definition.defaultValue.anyValue as Any? { properties[definition.name] = value }
+                }
+            }
+            let view = WebWallpaperView(url: item.contentURL, properties: properties, muted: settings.muted)
+            webViews[displayId] = view
+            window.contentView = view
         }
         window.orderBack(nil)
         NSLog("Mirage: showing %@ on %@ (window %@)", item.title, displayId, String(describing: window.windowNumber))
@@ -292,6 +304,10 @@ final class WallpaperController: ObservableObject {
             view.setPaused(paused || covered)
         }
         for (displayId, view) in imageViews {
+            let covered = windowInfo.map { isCovered(displayId, windowInfo: $0) } ?? false
+            view.setPaused(paused || covered)
+        }
+        for (displayId, view) in webViews {
             let covered = windowInfo.map { isCovered(displayId, windowInfo: $0) } ?? false
             view.setPaused(paused || covered)
         }

@@ -104,8 +104,8 @@ and ping-pong wiring), `SceneRenderer` (scene build, frame loop, present, offscr
 (desktop-level `NSWindow`; `SceneWallpaperView` = MTKView → `SceneRenderer`; `VideoWallpaperView` =
 `AVQueuePlayer` + `AVPlayerLooper`; `ImageWallpaperView`), `Library` (folder scanning →
 `WallpaperItem`), `WallpaperController` (per-display assignment, persistence, pause rules),
-`LibraryView`, `SettingsView`, `Settings` (plus `PowerState`), and `WebWallpaperView`, which is
-written and compiles but is not wired up yet.
+`WebWallpaperView` (WKWebView plus the WE JavaScript shim), `LibraryView`, `SettingsView`, `Settings`
+(plus `PowerState`).
 
 ---
 
@@ -136,6 +136,10 @@ written and compiles but is not wired up yet.
 * **Video textures**: a `TEXB0004` `.tex` whose payload is an MP4 decodes on a background queue
   through `AVAssetReader` and `CVMetalTextureCache`, and the current frame is swapped in as the
   scene clock advances. `Pixel Pokemon`'s animated background now renders.
+* **Web wallpapers**: `type: "web"` items render in a `WKWebView` behind the icons, with the
+  Wallpaper Engine JS shim: user properties reach `wallpaperPropertyListener`, the cursor reaches
+  `wallpaperMouseX/Y` and a synthesised `mousemove`, `wallpaperRegisterAudioListener` gets its 128
+  bins (silent, since there is no capture), and pausing holds `requestAnimationFrame` and the media.
 * **Sound**: a wallpaper's `sound` objects play, in `loop` or `random` mode, with the start delay,
   the `startsilent` fade, and the app's mute and volume. Clips are extracted from `scene.pkg` once
   into `~/Library/Caches/Mirage/audio`.
@@ -155,7 +159,6 @@ Counted over the 12-wallpaper corpus, where 201 image objects render and the res
 | **Puppet warp** (`.mdl`) | 1 | The skinned layer draws as a static quad. `Sources/WEKit/PuppetModel.swift` parses the format and computes bone matrices, but the renderer does not yet emit the `SKINNING` / `BONECOUNT` combos, the skinned vertex layout or `g_Bones`. |
 | **Bloom** (`general.bloom`) | 0 | - |
 | **Lights / `shape`** | 0 | `PerformLighting_V1` is stubbed to return black. |
-| **Web wallpapers** | - | `Sources/Mirage/WebWallpaperView.swift` is written and compiles (WKWebView plus the Wallpaper Engine JS shim) but `WallpaperController` still reports "not supported yet" instead of using it. |
 | **Audio visualiser** | - | `g_AudioSpectrum*` are zeros, so audio-reactive layers stay flat. Needs system-audio capture, which needs a screen-recording permission. |
 | **Rope particle renderers** | 5 of 69 | `rope` and `ropetrail` fall back to sprites; they need `genericropeparticle` and a Catmull-Rom spline. |
 
@@ -563,7 +566,15 @@ like every other effect combo.
 `wetool scripts <dir> [--frames N] [--object NAME]` runs the whole scripting layer with no Metal and
 no renderer, which is how you tell a broken script from a broken pass chain.
 
-### 7.4 Sound: built, plus bloom and puppets
+### 7.4 Sound and web: built, plus bloom and puppets
+
+*Web*: `WebWallpaperView` loads the wallpaper's `index.html` with read access scoped to its project
+folder, and injects a shim providing `wallpaperPropertyListener`, `wallpaperRegisterAudioListener`,
+`wallpaperMouseX/Y`, `wallpaperRequestRandomFileForProperty` and the pause events. It has no
+per-frame hook the way an `MTKView` does, so it polls the cursor on a 30 Hz timer that stops with
+the wallpaper. Known gaps: audio is silence, media integration is inert, and pausing holds
+`requestAnimationFrame` and media but not CSS animations or `setInterval`.
+
 
 *Sound*: `WallpaperSoundPlayer` extracts `sounds/*` from the pkg into
 `~/Library/Caches/Mirage/audio` once, then plays them with `AVAudioPlayer` in `loop` or `random`
@@ -585,22 +596,17 @@ vertex shader wants `SKINNING=1`, `BONECOUNT=n`, `g_Bones[]` (`mat4x3`) and the 
 
 In priority order, with everything needed already on disk:
 
-1. **Wire web wallpapers.** `WebWallpaperView` exists. Replace the `case .web` branch in
-   `WallpaperController.show` that sets `lastError` with it, and feed it the project's user
-   properties as plain `Any` values, unwrapped (the view wraps them itself). It has no per-frame
-   hook, so `updatePointer` needs a timer, and `teardownViews(for:)` must call `stop()` the way it
-   does for video.
-2. **Performance.** This is now the largest user-visible problem: `Pixel City` still runs at about
+1. **Performance.** This is now the largest user-visible problem: `Pixel City` still runs at about
    10 fps. The list in section 3 is unchanged and still ordered by expected impact.
-3. **Puppet warp.** `PuppetModel` parses the mesh and computes bone matrices. The renderer needs a
+2. **Puppet warp.** `PuppetModel` parses the mesh and computes bone matrices. The renderer needs a
    skinned vertex layout, `SKINNING` / `BONECOUNT` combos and a `g_Bones` uniform array. Its bind
    transforms are read column-major, which no synthetic test can falsify: if the first real puppet
    renders inside out, transpose there before looking anywhere else. The scripting layer's
    animation stubs become real at the same time.
-4. **Live property edits.** `PropertyStore` drives bindings already, and
+3. **Live property edits.** `PropertyStore` drives bindings already, and
    `ScriptRuntime.userPropertiesChanged` re-delivers them to scripts, but nothing calls it: the
    settings UI still lists properties instead of offering controls.
-5. **Bloom**, then the **audio visualiser** (needs ScreenCaptureKit audio capture and the matching
+4. **Bloom**, then the **audio visualiser** (needs ScreenCaptureKit audio capture and the matching
    permission), then **rope particles**.
 
 ## 8. Conventions and gotchas
