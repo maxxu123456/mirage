@@ -553,13 +553,24 @@ public final class ParticleLayer {
     /// Catmull-Rom through four points, the standard tension one half basis.
     private func spline(_ p0: SIMD3<Float>, _ p1: SIMD3<Float>, _ p2: SIMD3<Float>,
                         _ p3: SIMD3<Float>, _ t: Float) -> SIMD3<Float> {
-        let t2 = t * t
-        let t3 = t2 * t
-        let a: SIMD3<Float> = 2 * p1
-        let b: SIMD3<Float> = (p2 - p0) * t
-        let c: SIMD3<Float> = (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
-        let d: SIMD3<Float> = (3 * p1 - p0 - 3 * p2 + p3) * t3
-        return 0.5 * (a + b + c + d)
+        // Written out one operation at a time with explicit Float literals.
+        // The compact form mixes integer literals with SIMD3<Float> and the type
+        // checker gives up on it, which builds here and fails on other toolchains.
+        let t2: Float = t * t
+        let t3: Float = t2 * t
+        var quadratic: SIMD3<Float> = p0 * Float(2)
+        quadratic -= p1 * Float(5)
+        quadratic += p2 * Float(4)
+        quadratic -= p3
+        var cubic: SIMD3<Float> = p1 * Float(3)
+        cubic -= p0
+        cubic -= p2 * Float(3)
+        cubic += p3
+        var result: SIMD3<Float> = p1 * Float(2)
+        result += (p2 - p0) * t
+        result += quadratic * t2
+        result += cubic * t3
+        return result * Float(0.5)
     }
 
     /// Builds one ribbon per polyline, subdividing each span along a spline.
