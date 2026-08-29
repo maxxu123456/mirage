@@ -123,6 +123,8 @@ public final class ImageLayer {
     var activeEffectCount: Int { activeEffectMask.filter { $0 }.count }
     /// A layer that exists only to run effects over what is behind it.
     var isPassthroughLayer = false
+    /// A filled rectangle drawn behind a text object's glyphs.
+    var isTextBackground = false
     public private(set) var size: SIMD2<Float>
     public private(set) var texture: GPUTexture?
     public private(set) var contentRatio: SIMD2<Float>

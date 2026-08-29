@@ -160,6 +160,12 @@ public struct WESceneObject: Identifiable {
     public let brightness: DynamicValue
     public let parallaxDepth: DynamicValue
     public let colorBlendMode: Int
+    /// Text objects can draw a filled rectangle behind their glyphs.
+    public let opaqueBackground: Bool
+    public let backgroundColor: DynamicValue
+    public let backgroundBrightness: DynamicValue
+    /// How far the background extends past the glyphs, in scene units.
+    public let padding: Float
     public let alignment: String
     public let fullscreen: Bool
     public let copyBackground: Bool
@@ -220,6 +226,11 @@ public struct WESceneObject: Identifiable {
         brightness = dyn("brightness", .number(1))
         parallaxDepth = dyn("parallaxDepth", .string("0 0"))
         colorBlendMode = json["colorBlendMode"].int ?? 0
+        opaqueBackground = json["opaquebackground"].bool ?? false
+        backgroundColor = dyn("backgroundcolor", .string("0 0 0"))
+        backgroundBrightness = dyn("backgroundbrightness", .number(1))
+        let rawPadding = json["padding"].float ?? 0
+        padding = rawPadding.isFinite ? min(4096, max(0, rawPadding)) : 0
         alignment = json["alignment"].string ?? "center"
         fullscreen = json["fullscreen"].bool ?? false
         copyBackground = json["copybackground"].bool ?? false

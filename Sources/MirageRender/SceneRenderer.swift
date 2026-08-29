@@ -334,6 +334,12 @@ public final class SceneRenderer {
         for object in renderOrder() {
             if object.kind == .text {
                 if let layer = makeTextLayer(object: object) {
+                    // The background goes behind the glyphs, so it is built and
+                    // ordered first.
+                    if let background = makeTextBackgroundLayer(object: object, glyphSize: layer.size) {
+                        layers.append(background)
+                        orderedLayers.append(.image(background))
+                    }
                     layers.append(layer)
                     orderedLayers.append(.image(layer))
                 }
@@ -455,13 +461,65 @@ public final class SceneRenderer {
               let b = makeTarget(name: "_rt_textComposite_\(object.id)_b", width: w, height: h) else { return nil }
         layer.compositeA = a
         layer.compositeB = b
-        let visibleEffects = object.effects.filter { $0.visible.resolveBool(store) }
-        buildPasses(layer: layer, material: material, visibleEffects: visibleEffects)
+        buildPasses(layer: layer, material: material, visibleEffects: object.effects)
+        layer.effectVisibility = object.effects.map(\.visible)
+        layer.setActiveEffects(object.effects.map { $0.visible.resolveBool(store) })
         layer.relocateBlending()
         layer.wirePasses()
         textLayers[ObjectIdentifier(layer)] = TextBinding(object: object)
         textLayers[ObjectIdentifier(layer)]?.lastKey = textKey(spec)
         diagnostics.append(contentsOf: layer.diagnostics.map { "[\(object.id)] \($0)" })
+        return layer
+    }
+
+    /// The filled rectangle a text object can draw behind its glyphs.
+    ///
+    /// Wallpaper Engine draws it with the stock `flat` shader, which has no
+    /// textures at all and reads only `g_Color` and `g_Alpha`, so this is its
+    /// own tiny layer sized to the glyph block grown by `padding` on every side
+    /// rather than an extra pass on the text layer, whose composites are sized
+    /// to the glyphs.
+    private func makeTextBackgroundLayer(object: WESceneObject, glyphSize: SIMD2<Float>) -> ImageLayer? {
+        guard object.opaqueBackground else { return nil }
+        guard let material = locator.material("materials/fonts/fontbackground.json"),
+              !material.passes.isEmpty else {
+            diagnostics.append("[\(object.id)] font background material not found")
+            return nil
+        }
+        let padding = object.padding
+        let size = SIMD2(max(1, glyphSize.x + padding * 2), max(1, glyphSize.y + padding * 2))
+        let model = WEModel(json: .object(["material": .string("materials/fonts/fontbackground.json")]))
+        var alignment = object.raw["horizontalalign"].string ?? "center"
+        if let vertical = object.raw["verticalalign"].string, vertical != "center" { alignment += vertical }
+        let scope = TargetScope(name: "textbg\(object.id)", parent: sceneScope)
+        // Its own object, because `flat` reads the engine's `g_Color` and
+        // `g_Alpha`, which come from the object's own colour and brightness.
+        // Sharing the text object would paint the box in the glyphs' colour.
+        var fields: [String: JSON] = [:]
+        if case .object(let raw) = object.raw { fields = raw }
+        fields["id"] = .number(Double(object.id))
+        fields["name"] = .string(object.name + " background")
+        fields["color"] = object.raw["backgroundcolor"].isNull
+            ? .string("0 0 0") : object.raw["backgroundcolor"]
+        if !object.raw["backgroundbrightness"].isNull {
+            fields["brightness"] = object.raw["backgroundbrightness"]
+        }
+        fields["text"] = .null
+        fields["effects"] = .null
+        let backgroundObject = WESceneObject(json: .object(fields))
+        let layer = ImageLayer(object: backgroundObject, model: model, size: size, texture: nil,
+                               objectScope: scope, isPassthrough: false, isFullscreen: false,
+                               alignment: alignment)
+        let w = max(1, Int(size.x.rounded())), h = max(1, Int(size.y.rounded()))
+        guard let a = makeTarget(name: "_rt_textBackground_\(object.id)_a", width: w, height: h),
+              let b = makeTarget(name: "_rt_textBackground_\(object.id)_b", width: w, height: h) else { return nil }
+        layer.compositeA = a
+        layer.compositeB = b
+        buildPasses(layer: layer, material: material, visibleEffects: [])
+        layer.relocateBlending()
+        layer.wirePasses()
+        layer.isTextBackground = true
+        diagnostics.append(contentsOf: layer.diagnostics.map { "[\(object.id)] background \($0)" })
         return layer
     }
 

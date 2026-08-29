@@ -206,7 +206,14 @@ Other limitations:
   `audioprocessingmode` is set follows the music, scaling its rate by the spectrum average over its
   own frequency range, remapped through `audioprocessingbounds` and its exponent. Silence leaves the
   rate alone rather than stopping emission, so a muted or unpermitted Mac still gets its particles.
-* Text **background** passes (`opaquebackground`, `padding`) are not drawn; only the glyphs are.
+* Text **backgrounds** (`opaquebackground`) draw: a filled rectangle sized to the glyph block grown
+  by `padding` on every side, ordered just before the glyphs. It is its own layer rather than an
+  extra pass, because the stock `materials/fonts/fontbackground.json` uses `flat`, which has no
+  textures and reads only `g_Color` and `g_Alpha`; those come from the object's own colour and
+  brightness, so the background gets a synthetic object carrying `backgroundcolor` and
+  `backgroundbrightness` instead. Sharing the text object would paint the box in the glyphs' colour,
+  which is white on white in the obvious case. No sample wallpaper sets it, so it was checked against
+  a hand-written scene in the scratchpad.
 * `RenderContext`'s pipeline and library caches are bounded, least recently used first, at 512 each.
   One wallpaper holds roughly 36 pipelines and 50 libraries, so about ten switches fit before
   anything is evicted. Evicting is safe at any moment: Metal retains a pipeline while an encoder is
