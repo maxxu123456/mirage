@@ -61,6 +61,10 @@ MIRAGE_DEBUG=1 .build/debug/wetool render …                        # log every
 rm -rf ~/Library/Caches/Mirage/shaders                             # clear the shader cache
 ```
 
+The library scans **off the main thread**: the first read of anything under `Documents` blocks on
+the system's permission prompt, and doing that during `init` froze the app before any window
+appeared, with no clue why. Assignments are restored again when the scan lands.
+
 App state lives in `defaults read com.mirage.wallpaper` (`library.searchPaths`, and
 `wallpaper.assignments` keyed by `display-<CGDirectDisplayID>`); `defaults delete
 com.mirage.wallpaper` resets it. Run `build/Mirage.app/Contents/MacOS/Mirage` directly to see

@@ -55,6 +55,12 @@ final class WallpaperController: ObservableObject {
         NSLog("Mirage: %d displays %@, %d library items, assignments %@",
               displays.count, displays.map(\.id).description, library.items.count, assignments.description)
         restoreAssignments()
+        // The library scans off the main thread, so the assigned wallpaper is
+        // usually not known yet at this point: restore again when it lands.
+        library.$items
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.restoreAssignments(onlyMissing: true) }
+            .store(in: &cancellables)
         observeSystem()
 
         settings.$fpsCap

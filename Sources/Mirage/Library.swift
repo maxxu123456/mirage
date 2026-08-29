@@ -68,6 +68,15 @@ final class WallpaperLibrary: ObservableObject {
         rescan()
     }
 
+    /// Scanning runs off the main thread.
+    ///
+    /// Reading a folder can block for a long time: the first read of anything
+    /// under Documents waits on the system's permission prompt, and a network
+    /// volume can stall outright. Doing that during `init` froze the app before
+    /// any window appeared, with no clue as to why.
+    private let scanQueue = DispatchQueue(label: "com.mirage.library.scan", qos: .userInitiated)
+    private var scanGeneration = 0
+
     /// Where Wallpaper Engine content normally lives on this Mac.
     static func defaultSearchPaths() -> [URL] {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -93,10 +102,24 @@ final class WallpaperLibrary: ObservableObject {
     }
 
     func rescan() {
+        scanGeneration += 1
+        let generation = scanGeneration
+        let roots = searchPaths
+        scanQueue.async { [weak self] in
+            let found = WallpaperLibrary.scan(roots)
+            DispatchQueue.main.async {
+                guard let self, self.scanGeneration == generation else { return }
+                self.items = found
+            }
+        }
+    }
+
+    /// Walks the search paths. Pure, so it is safe to run anywhere.
+    private static func scan(_ roots: [URL]) -> [WallpaperItem] {
         var found: [WallpaperItem] = []
         var seen = Set<String>()
         let fm = FileManager.default
-        for root in searchPaths {
+        for root in roots {
             guard let entries = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey],
                                                             options: [.skipsHiddenFiles]) else { continue }
             for entry in entries.sorted(by: { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }) {
@@ -110,7 +133,7 @@ final class WallpaperLibrary: ObservableObject {
                 }
             }
         }
-        items = found
+        return found
     }
 
     /// A Wallpaper Engine workshop folder (`project.json` + content).
