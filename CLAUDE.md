@@ -1,12 +1,12 @@
-# Mirage — Wallpaper Engine wallpapers on macOS
+# Mirage, Wallpaper Engine wallpapers on macOS
 
 Mirage is a native macOS menu-bar app that renders **Wallpaper Engine** wallpapers behind the desktop
 icons: `scene.pkg` "scene" wallpapers through a Metal reimplementation of WE's renderer, plus video,
 image and GIF wallpapers.
 
-This file is the **single source of truth** for the project — architecture, formats, conventions,
-current state, and the specs for the parts that are not built yet. There are deliberately no other
-markdown files in the repo.
+This file is the **single source of truth** for the project: architecture, formats, conventions,
+current state, and the specs for the parts that are not built yet. `README.md` is the short,
+user-facing version; everything else lives here.
 
 ---
 
@@ -31,7 +31,7 @@ ad-hoc code signature. The result runs on a Mac without Homebrew.
   Note: a bundle built on a Mac whose Homebrew glslang/SPIRV-Tools were compiled for a newer
   macOS inherits that requirement at runtime, even though the SwiftPM platform is 14. Build on
   the oldest macOS you intend to support, or rebuild those formulae for it.
-* `brew install glslang spirv-cross spirv-tools` — needed to build, and bundled into the app.
+* `brew install glslang spirv-cross spirv-tools`, needed to build, and bundled into the app.
 * The Wallpaper Engine **assets folder**, which holds the built-in shaders, models and materials that
   wallpapers reference but never pack. Expected at
   `~/Library/Application Support/Steam/steamapps/common/wallpaper_engine/assets`, fetched with a Steam
@@ -42,10 +42,10 @@ ad-hoc code signature. The result runs on a Mac without Homebrew.
   ```
   Workshop items: `steamcmd +login <account> +workshop_download_item 431960 <id> +quit`, which lands
   them in `~/Library/Application Support/Steam/steamapps/workshop/content/431960/<id>/`.
-  Never redistribute the assets folder — locate it at runtime via
+  Never redistribute the assets folder, locate it at runtime via
   `AssetLocator.defaultAssetsDirectories()`.
 
-**Developer CLI** (`wetool`) — the fastest way to debug anything:
+**Developer CLI** (`wetool`), the fastest way to debug anything:
 
 ```sh
 .build/debug/wetool ls          "<project-dir>"                    # list scene.pkg contents
@@ -70,16 +70,17 @@ com.mirage.wallpaper` resets it. Run `build/Mirage.app/Contents/MacOS/Mirage` di
 
 | Path | What |
 |---|---|
-| `Sources/WEKit/` | Pure-Swift Wallpaper Engine formats. No Metal, no AppKit — parsing lives here and is cheap to test. |
+| `Sources/WEKit/` | Pure-Swift Wallpaper Engine formats. No Metal, no AppKit, parsing lives here and is cheap to test. |
 | `Sources/MirageRender/` | The Metal renderer and the GLSL→MSL shader compiler. |
 | `Sources/Mirage/` | The app: menu bar, desktop windows, library, settings. |
 | `Sources/wetool/` | Developer CLI. |
 | `Sources/CShaderTools/` | System-library shim exposing glslang's and SPIRV-Cross's C APIs to Swift. |
-| `Resources/WEAssets/` | The few WE built-ins that ship as no file at all — currently `shaders/commands/copy.{vert,frag}`, used by effect passes declared as `{"command":"copy"}`. |
+| `Resources/WEAssets/` | The few WE built-ins that ship as no file at all, currently `shaders/commands/copy.{vert,frag}`, used by effect passes declared as `{"command":"copy"}`. |
 | `Tests/` | `WEKitTests` (formats, preprocessing) and `MirageRenderTests` (geometry/uniform invariants). |
-| `scripts/build-app.sh` | Bundle assembly. |
+| `scripts/build-app.sh` | Bundle assembly. Set `MIRAGE_VERSION` to stamp a version. |
+| `.github/workflows/` | `ci.yml` builds, tests and assembles the bundle on every push. `release.yml` publishes a zipped `Mirage.app` when a `v*` tag is pushed. |
 
-**WEKit**: `JSON` (dynamic tree — WE stores vectors as `"1 0.5 0"` strings), `WEPackage`
+**WEKit**: `JSON` (dynamic tree, WE stores vectors as `"1 0.5 0"` strings), `WEPackage`
 (`scene.pkg`), `WETexture` (`.tex` decode), `BlockCompression` (CPU BC1/2/3 fallback), `WEProject`
 (`project.json` + user properties), `DynamicValue` (`PropertyStore`, `{"user":…}` / `{"script":…}`
 bindings and a small JS-like condition evaluator), `SceneModel` (scene/objects/effects/materials/
@@ -104,7 +105,7 @@ and ping-pong wiring), `SceneRenderer` (scene build, frame loop, present, offscr
 
 ### Works
 
-* **Scene wallpapers render correctly** — verified against each wallpaper's own `preview.gif`:
+* **Scene wallpapers render correctly**, verified against each wallpaper's own `preview.gif`:
   multi-layer composition, per-object transforms and alignment, effect chains with ping-pong
   composites and named render targets, sprite-sheet animation, POT-padding UVs, blend modes,
   user-property bindings, parallax, and passthrough / compose / fullscreen / solid layers.
@@ -128,10 +129,10 @@ Counted over the 12-wallpaper corpus, where 201 image objects render and the res
 | **Sound objects** | 7 | Silent. |
 | **Video textures** | 1 (`Pixel Pokemon`'s background) | An MP4 inside a `TEXB0004` `.tex`; the layer draws transparent. |
 | **Puppet warp** (`.mdl`) | 1 | The skinned layer draws as a static quad. |
-| **Bloom** (`general.bloom`) | 0 | — |
+| **Bloom** (`general.bloom`) | 0 | - |
 | **Lights / `shape`** | 0 | `PerformLighting_V1` is stubbed to return black. |
-| **Web wallpapers** | — | The controller reports "not supported yet". |
-| **Audio visualiser** | — | `g_AudioSpectrum*` are zeros, so audio-reactive layers stay flat. No system-audio capture. |
+| **Web wallpapers** | - | The controller reports "not supported yet". |
+| **Audio visualiser** | - | `g_AudioSpectrum*` are zeros, so audio-reactive layers stay flat. No system-audio capture. |
 
 Other limitations:
 
@@ -144,7 +145,7 @@ Other limitations:
   sample it by LOD (rough reflections) always read level 0.
 * **Multi-image animated textures** upload only image 0.
 * `instance` / `instanceoverride` on *image* objects are ignored (they matter mainly for particles).
-* `camerashake`, `camerafade`, `camerapreview` are ignored — they are editor conveniences.
+* `camerashake`, `camerafade`, `camerapreview` are ignored, they are editor conveniences.
 * Multi-display is implemented but has only been tested on a single display.
 * `RenderContext`'s pipeline and library caches are never evicted, so memory grows slowly across
   many wallpaper switches within one session (bounded by the number of distinct shader variants used).
@@ -161,7 +162,7 @@ Other limitations:
 This is **too slow** and is the main engineering problem after the missing features. Likely causes in
 order of impact:
 
-1. One `MTLRenderCommandEncoder` per pass — Pixel City runs roughly 90 passes per frame. Consecutive
+1. One `MTLRenderCommandEncoder` per pass, Pixel City runs roughly 90 passes per frame. Consecutive
    passes sharing a destination should share an encoder.
 2. Every layer allocates two full-size composite targets; Pixel City's scene is 5120×2160, so the
    working set is large and the frame is bandwidth-bound.
@@ -170,7 +171,7 @@ order of impact:
 4. Setup time is dominated by the first shader compile; the disk cache in
    `~/Library/Caches/Mirage/shaders` makes warm starts about ten times faster.
 
-The app caps at 30 fps by default, so the 22–29 ms wallpapers are usable today and Pixel City is not.
+The app caps at 30 fps by default, so the 22-29 ms wallpapers are usable today and Pixel City is not.
 
 ---
 
@@ -199,7 +200,7 @@ fileCount × { u32 len, char[len] name; u32 offset; u32 length }
 No compression, no directory entries. Holds `scene.json`, `materials/**/*.json` and `*.tex`,
 `models/*.json`, `effects/**/effect.json`, `particles/*.json`, `shaders/**`, `sounds/`, `fonts/`.
 
-**Not packed** — these come from the WE assets folder: `genericimage2/3/4`, `genericparticle`,
+**Not packed**, these come from the WE assets folder: `genericimage2/3/4`, `genericparticle`,
 `common*.h`, `models/util/*.json`, `materials/util/*` (`white`, `black`, `noise`…),
 `effects/<stock>/effect.json`, `effects/waterripplenormal.tex`, `particle/*` textures. Stock effects
 live at `assets/effects/<name>/{materials,shaders}/effects/<file>` but are referenced as
@@ -236,7 +237,7 @@ Flags: `1` no interpolation (nearest), `2` clamp UVs, `4` animated, `8` clamp to
 content occupies `u ∈ [0, imageW/textureW]`, `v ∈ [0, imageH/textureH]`. For "free image" payloads
 (PNG/JPEG) the mip is stored at the *content* size, so that ratio is 1.
 `g_TextureNResolution = (gpuW, gpuH, contentW, contentH)`; for animated textures the `zw` pair is the
-sprite (gif) size. LZ4 blocks decode with `COMPRESSION_LZ4_RAW` from `libcompression` — no
+sprite (gif) size. LZ4 blocks decode with `COMPRESSION_LZ4_RAW` from `libcompression`, no
 third-party LZ4 dependency.
 
 ### 4.4 `scene.json`
@@ -261,7 +262,7 @@ An object is an **image** when it has `image` (a `models/*.json` path), else **p
 (`particle`), **sound** (`sound`, an array), **text** (`text`), **light**, else a group.
 Common fields: `id`, `name`, `parent`, `dependencies[]`, `origin "x y z"`, `scale`, `angles`
 (**radians**), `size "w h"`, `visible`, `alpha`, `color`, `brightness`, `parallaxDepth "x y"`,
-`colorBlendMode`, `alignment` / `horizontalalign`, `locktransforms` (editor-only — ignore),
+`colorBlendMode`, `alignment` / `horizontalalign`, `locktransforms` (editor-only, ignore),
 `effects[{file, id, name, visible, passes[{combos, constantshadervalues, textures}]}]`,
 `instanceoverride`, `animationlayers`, `config.passthrough`.
 
@@ -281,7 +282,7 @@ texture).
 
 **Material** (`materials/*.json`): `passes[{ shader, blending: normal|translucent|additive|disabled,
 cullmode, depthtest, depthwrite, textures[], usertextures[], combos{}, constantshadervalues{} }]`.
-`usertextures` name *user properties* and frequently resolve to nothing — fall back to `textures`.
+`usertextures` name *user properties* and frequently resolve to nothing, fall back to `textures`.
 
 **Effect** (`effects/<name>/effect.json`): `passes[{ material, target, bind[{name, index}], combos,
 constantshadervalues, textures, command:"copy", source }]`, `fbos[{ name, scale, format }]` (size =
@@ -297,13 +298,13 @@ The numeric `BLENDMODE` table used by `ApplyBlending` lives in `assets/shaders/c
 Wallpaper Engine shaders are "loosely GLSL 1.20" authored against HLSL rules and compiled to HLSL on
 Windows. Getting them onto Metal takes five stages:
 
-1. **Load** — `AssetLocator.shaderSource(name, ext:)` resolves `shaders/<name>.vert|.frag` through
+1. **Load**, `AssetLocator.shaderSource(name, ext:)` resolves `shaders/<name>.vert|.frag` through
    pkg → project dir → assets, including the stock-effect index and `zcompat` overrides.
-2. **Preprocess** — `ShaderPreprocessor.load` expands `#include` (the block goes *before the first
+2. **Preprocess**, `ShaderPreprocessor.load` expands `#include` (the block goes *before the first
    function definition and outside any `#if`*, because the headers reference uniforms declared above
    them) and extracts `// [COMBO] {…}` declarations plus `uniform T name; // {json}` annotations
    (`material`, `default`, `combo`, `require`, `requireany`, `range`, `type`).
-3. **Stage-1 GLSL** — `#version 450` + a prelude + `#define <COMBO> <value>` + fix-ups:
+3. **Stage-1 GLSL**, `#version 450` + a prelude + `#define <COMBO> <value>` + fix-ups:
    * prelude: `mul(x,y) = (y)*(x)`, `lerp`, `frac`, `saturate`, `CAST2/3/4`, `CAST3X3`,
      `float2/3/4`, `texSample2D → texture`, `texSample2DLod → textureLod`, `atan2`, `fmod`, `log10`,
      `ddx`/`ddy`, `clip`, and HLSL-permissive overload sets `we_pow` / `we_max` / `we_min` /
@@ -313,12 +314,12 @@ Windows. Getting them onto Metal takes five stages:
      identifier → `we_texture`; junk preprocessor expressions
      (`#if g_Texture0Resolution.x < …`) → `#if 0`; `COMBO ? a : b` → `((COMBO) != 0) ? a : b`.
    * `#require LightingV1` is commented out and `PerformLighting_V1` stubbed to return black.
-4. **glslang preprocess → `finalize`** — rewrites `attribute` → `layout(location = N) in`,
+4. **glslang preprocess → `finalize`**, rewrites `attribute` → `layout(location = N) in`,
    `varying` → `out`/`in` with matching locations (arrays supported), reconciles stage-interface
    mismatches (the fragment stage takes the vertex's type plus a converting prologue; outputs the
    vertex never declared are added), `gl_FragColor` → `out_FragColor`, pins sampler bindings to the
    `g_TextureN` index, and hoists uniform-dependent global initialisers into `main()`.
-5. **Compile** — glslang (relaxed Vulkan rules; default uniform block `WEUniforms` at set 0
+5. **Compile**, glslang (relaxed Vulkan rules; default uniform block `WEUniforms` at set 0
    binding 0) → SPIR-V 1.3 → SPIRV-Cross MSL 2.3 with `FLIP_VERTEX_Y` and
    `MSL_ENABLE_DECORATION_BINDING`. Reflection yields the uniform block's members with std140
    offsets and strides, texture bindings and vertex inputs. The entry point is `main0`. Programs are
@@ -361,12 +362,12 @@ wallpapers**. Four are counter-intuitive, and each one caused a visible bug:
    `composelayer.vert` needs a real MVP to compute `v_ScreenCoord`, and `genericparticle.vert` builds
    its geometry from `g_ModelMatrix` / `g_ViewProjectionMatrix`. Baking double-transforms them.
 3. **Metal clips z to `[0,1]`; OpenGL uses `[-1,1]`.** A `glOrtho`-style matrix sends WE's flat
-   z = 0 geometry to z ≈ −1 and the rasteriser discards *every* triangle — the symptom is a scene
+   z = 0 geometry to z ≈ −1 and the rasteriser discards *every* triangle, the symptom is a scene
    that renders nothing but its clear colour. `Mat.ortho` emits the Metal convention and is always
    called with `near: -1, far: 1`; all WE quads are flat at z = 0 and nothing depth-tests.
 4. **The present pass must not flip.** SPIRV-Cross's `FLIP_VERTEX_Y` already converts GL's bottom-up
    convention to Metal's top-left texture origin, so the scene target's row 0 *is* the top of the
-   image. Flipping again renders every wallpaper upside down — and it looks plausible enough on
+   image. Flipping again renders every wallpaper upside down, and it looks plausible enough on
    screen that you must check against the wallpaper's own `preview.gif`, not against intuition.
 
 `Tests/MirageRenderTests/GeometryTests.swift` pins all of this. Do not change the orientation
@@ -383,14 +384,14 @@ conventions without re-verifying against a preview.
 * **Rotation**: `angles.z` in radians, `Rz(−angle)` about the quad centre (negated because the space
   is mirrored). `MVP_screen = P · T(c) · Rz(−angle) · T(−c) · T(parallax)`.
 * **Camera**: `P = ortho(-W/2, W/2, -H/2, H/2)` with the extents divided by `general.zoom`. The view
-  matrix is **identity** — `camera.eye` cancels between `ortho·translate(eye)` and `lookAt(eye,…)`
+  matrix is **identity**, `camera.eye` cancels between `ortho·translate(eye)` and `lookAt(eye,…)`
   in every real scene.
 * **Parent chain**: `origin = parentOrigin + rotateCCW(childOrigin * parentScale.xy, parentAngle)`,
   `origin.z = parentOrigin.z + childOrigin.z * parentScale.z`, scales multiply, angles add, depth
   capped at 32.
 * **Parallax**: once per scene per frame,
   `disp = mix(disp, (pointer − 0.5) * amount * mouseInfluence, clamp(delay * dt, 0, 1))`; then per
-  object `((parallaxDepth + amount) * disp * sceneWidth)` — **scene width on both axes** — applied as
+  object `((parallaxDepth + amount) * disp * sceneWidth)`, **scene width on both axes**, applied as
   a right-multiplied translation on the MVP.
 
 **The three vertex buffers** (6 vertices, `.triangle`, no index buffer). The v-order is what keeps
@@ -407,7 +408,7 @@ scene  (last)    pos (L,yHigh)(L,yLow)(R,yHigh)(R,yHigh)(L,yLow)(R,yLow)
                  MVP = MVP_screen
 ```
 
-`cw`/`ch` are forced to 1 for animated textures — their frame rect arrives through
+`cw`/`ch` are forced to 1 for animated textures, their frame rect arrives through
 `g_Texture0Rotation` (`xAxis.x/texW, xAxis.y/texH, yAxis.x/texW, yAxis.y/texH`) and
 `g_Texture0Translation` (`x/texW, y/texH`) instead. A `passthrough` model replaces the copy positions
 with the scene-space rect and sets `MVP_copy = MVP_screen`; `passthrough && fullscreen` uses a
@@ -427,18 +428,18 @@ Per image object (`ImageLayer`), mirroring lwe's `CImage::setupPasses`:
   and does **not** swap; it opens a "target sequence" whose entry input is offered to later passes as
   `previous`.
 * The last pass without a target draws into the scene framebuffer with `MVP_screen` and an
-  **RGB-only write mask** — alpha is never written into the scene.
+  **RGB-only write mask**, alpha is never written into the scene.
 * **Texture slots**, highest priority first: `bind` > override `usertextures` > override `textures` >
   material `usertextures` > material `textures` > fragment sampler default > vertex sampler default.
   A `"previous"` bind or an exhausted chain resolves to `previousInput ?? input`; slot 0 defaults to
   the pass input. `_rt_*` / `_alias_*` names resolve through effect → object → scene scope. Anything
-  unresolved binds a 1×1 white texture — transparent when the *object's own* texture is missing, so a
+  unresolved binds a 1×1 white texture, transparent when the *object's own* texture is missing, so a
   failed load cannot blow out the scene.
 * **Self-read protection**: if a bound texture is also the destination (e.g. sampling
   `_rt_FullFrameBuffer` while drawing into the scene), it is blitted to a scratch target first.
 * Blending: `translucent` = `srcAlpha / 1-srcAlpha`, `additive` = `srcAlpha / one`,
   `normal` = `one / zero`, `disabled` = off. Straight (non-premultiplied) alpha throughout, and
-  non-sRGB pixel formats — WE composites in gamma space.
+  non-sRGB pixel formats, WE composites in gamma space.
 
 ### 6.3 Uniforms
 
@@ -453,11 +454,11 @@ Built-ins supplied: `g_Time`, `g_Daytime` / `g_DayTime` (`(hour*60 + minute)/144
 `g_Screen`, `g_TextureReductionScale`, `g_Brightness`, `g_UserAlpha`, `g_Alpha`, `g_Color`,
 `g_Color4 = vec4(color, alpha)`, `g_CompositeColor`, `g_LightAmbientColor`, `g_LightSkylightColor`,
 `g_AudioSpectrum{16,32,64}{Left,Right}`, `g_TextureNResolution`, `g_TextureNRotation` /
-`g_TextureNTranslation`, and the matrices: `g_ModelViewProjectionMatrix` (per pass kind —
+`g_TextureNTranslation`, and the matrices: `g_ModelViewProjectionMatrix` (per pass kind -
 `ortho(0,w,0,h)` for the copy pass, identity for effect passes, `MVP_screen` for the final pass),
 `g_EffectModelViewProjectionMatrix` (an alias), `g_ModelViewProjectionMatrixInverse` (the honest
 inverse), `g_ModelMatrix` = `g_EffectModelMatrix` = `ortho(0, layerW, 0, layerH)` (yes, an ortho
-matrix in the "model" slot — WE really does that), `g_ModelMatrixInverse`, `g_ViewProjectionMatrix` =
+matrix in the "model" slot, WE really does that), `g_ModelMatrixInverse`, `g_ViewProjectionMatrix` =
 identity, `g_NormalModelMatrix` = `mat3(1)`, `g_EffectTextureProjectionMatrix(+Inverse)` = identity.
 
 `UniformWriter` packs these using SPIRV-Cross's reflected offsets, array strides and matrix strides,
@@ -471,7 +472,7 @@ Condensed from a reverse-engineering pass over linux-wallpaperengine (`lwe`, C++
 authoritative) and catsout's wallpaper-scene-renderer (`wsr`, C++/Vulkan, cross-check). The long-form
 versions are kept outside the repo at `~/Developer/we-macos-reference/renderer-spec/`.
 
-### 7.1 Particles — the biggest gap
+### 7.1 Particles, the biggest gap
 
 **State**: `position`, `velocity`, `acceleration`, `rotation` (radians; `.z` is the sprite roll),
 `angularVelocity`, `angularAcceleration`, `color`, `alpha`, `size` (diameter), `lifetime`, `age`,
@@ -535,7 +536,7 @@ changed to this 80-byte layout.**
 without a sheet; `g_OrientationUp/Right/Forward = (0,1,0)/(1,0,0)/(0,0,1)`;
 `g_ViewUp/Right = (0,1,0)/(1,0,0)`; `g_EyePosition = (0,0,1000)`; `g_Brightness = overbright`;
 `g_RefractAmount = 0.05` under `REFRACT`.
-**Particles are the one place where the MVP must be real**, not identity — the vertex shader does the
+**Particles are the one place where the MVP must be real**, not identity, the vertex shader does the
 billboard expansion itself: `model = translate(origin) · parallax · rotZ(-angles.z) · rotY(angles.y)
 · rotX(-angles.x) · scale`, `mvp = viewProjection * model`.
 Combos: `THICKFORMAT=1` always, `SPRITESHEET=1` with frames, `SPRITESHEETBLEND=1` unless `flags & 2`,
@@ -543,7 +544,7 @@ Combos: `THICKFORMAT=1` always, `SPRITESHEET=1` with frames, `SPRITESHEETBLEND=1
 Draw straight into the scene target, in render order, with `depthClipMode = .clamp`, binding the
 particle texture to slot 0 regardless of the shader's annotation.
 
-**Not implemented in any reference renderer — do not chase**: audio-driven emitter rate, `starttime`,
+**Not implemented in any reference renderer, do not chase**: audio-driven emitter rate, `starttime`,
 `controlpointstartindex`, `emitter.cone`, `locktopointer`, ropetrail segment history.
 
 ### 7.2 Text layers
@@ -558,7 +559,7 @@ CoreText (`CTTypesetterSuggestLineBreak` for `limitwidth`, `CTLineCreateTruncate
 `g_Texture0Resolution = (w, h, w, h)`. Draw with `materials/fonts/basefont.json`
 (`g_Color4 = vec4(color, alpha)`), plus a `fontbackground` pass inflated by `padding` when
 `opaquebackground`. Position the quad exactly like an image layer, then feed it through the normal
-pass chain so `effects` and `colorBlendMode` work — 13 of the corpus's 57 text layers need that.
+pass chain so `effects` and `colorBlendMode` work, 13 of the corpus's 57 text layers need that.
 Cache by `(font, pixelSize, string, wrapWidth, maxrows)`.
 
 ### 7.3 Video textures and video wallpapers
@@ -583,8 +584,8 @@ each frame, using the return value as the property value. `engine` needs `framet
 *Sound*: extract `sounds/*` to a cache directory, one `AVAudioPlayer` chain per object, `loop` and
 `random` playback modes, start after `rand(mintime, maxtime)`, effective volume
 `object.volume × appVolume × (muted ? 0 : 1)`.
-*Bloom*: when `general.bloom`, append a synthetic full-screen chain — downsample ¼ → ⅛, blur,
-`_rt_Bloom`, combine — using `_rt_4FrameBuffer` and `_rt_8FrameBuffer`.
+*Bloom*: when `general.bloom`, append a synthetic full-screen chain, downsample ¼ → ⅛, blur,
+`_rt_Bloom`, combine, using `_rt_4FrameBuffer` and `_rt_8FrameBuffer`.
 *Puppet warp*: `.mdl` (`MDLV0021` / `MDLV0023`) carries a skinned mesh, bones and animations; the
 vertex shader wants `SKINNING=1`, `BONECOUNT=n`, `g_Bones[]` (`mat4x3`) and the `a_BlendIndices` /
 `a_BlendWeights` attributes.
@@ -595,13 +596,13 @@ vertex shader wants `SKINNING=1`, `BONECOUNT=n`, `g_Bones[]` (`mat4x3`) and the 
 
 * **Verify visual changes against the wallpaper's own `preview.gif`**, never against reasoning alone.
   Two orientation bugs in this project looked completely plausible on screen.
-* `Int(someFloat)` traps in Swift on NaN or infinity — always clamp values that come from wallpaper
+* `Int(someFloat)` traps in Swift on NaN or infinity, always clamp values that come from wallpaper
   JSON before converting.
 * Wallpaper files are third-party input and must be treated as hostile: parsers fail soft (return
   `nil`, record a diagnostic) rather than throwing or crashing. `SceneRenderer.diagnostics` and
   `AssetLocator.unresolvedPaths` collect what went wrong.
 * Render targets and textures are `.private`; uploads go through a staging buffer and a blit.
-* The renderer never uses sRGB pixel formats — WE composites in gamma space.
+* The renderer never uses sRGB pixel formats, WE composites in gamma space.
 * `MIRAGE_DEBUG=1` logs every encoded pass with its destination, bound slots, blend mode and quad.
 * Do not add AI or assistant attribution to code, comments or commits.
 
@@ -617,7 +618,7 @@ dependencies keep their own licenses: glslang (BSD/Apache-2.0), SPIRV-Cross and 
 
 * **linux-wallpaperengine** (Almamu, C++/OpenGL) is the authoritative reference implementation and
   **wallpaper-scene-renderer** (catsout, C++/Vulkan) is the cross-check. Both are GPL-licensed, so
-  their source is **not** vendored here — clone them separately if you need to re-check behaviour.
+  their source is **not** vendored here, clone them separately if you need to re-check behaviour.
   Local mirrors and the long-form specs derived from them live outside the repo at
   `~/Developer/we-macos-reference/`.
 * Official designer documentation: <https://docs.wallpaperengine.io> (scene → shaders, effects,

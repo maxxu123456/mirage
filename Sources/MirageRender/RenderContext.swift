@@ -24,7 +24,7 @@ public struct VertexLayout: Hashable {
         self.name = name; self.attributes = attributes; self.stride = stride
     }
 
-    /// position float3 + texcoord float2, 20 bytes — used by every image/effect quad.
+    /// position float3 + texcoord float2, 20 bytes, used by every image/effect quad.
     public static let quad = VertexLayout(
         name: "quad",
         attributes: [
@@ -250,7 +250,7 @@ public final class RenderContext {
         case .disabled:
             attachment.isBlendingEnabled = false
         case .normal:
-            // GL: glBlendFunc(GL_ONE, GL_ZERO) — replace, but still "enabled".
+            // GL: glBlendFunc(GL_ONE, GL_ZERO), replace, but still "enabled".
             attachment.isBlendingEnabled = true
             attachment.rgbBlendOperation = .add
             attachment.alphaBlendOperation = .add

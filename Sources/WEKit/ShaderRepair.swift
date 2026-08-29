@@ -335,7 +335,7 @@ public enum ShaderRepair {
     private static let functionHeadRegex = try! NSRegularExpression(
         pattern: #"^\s*(?:(?:lowp|mediump|highp)\s+)?([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*\([^;]*\)\s*\{?\s*$"#)
 
-    /// `function does not return a value: NAME` — HLSL tolerates it, GLSL does not.
+    /// `function does not return a value: NAME`, HLSL tolerates it, GLSL does not.
     private static func repairWholeSource(_ diag: Diagnostic, lines: [String]) -> ([String], String)? {
         guard let range = diag.message.range(of: "function does not return a value:") else { return nil }
         let name = diag.message[range.upperBound...].trimmingCharacters(in: .whitespaces)

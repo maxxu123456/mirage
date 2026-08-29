@@ -3,8 +3,12 @@ import PackageDescription
 
 // Homebrew provides glslang (dylibs) and spirv-cross (static libs). The build
 // script copies the dylibs into the .app bundle so the final app is relocatable.
-let brewInclude = "/opt/homebrew/include"
-let brewLib = "/opt/homebrew/lib"
+// Apple Silicon installs to /opt/homebrew; Intel Macs use /usr/local.
+import Foundation
+let brewPrefix = FileManager.default.fileExists(atPath: "/opt/homebrew/include/glslang")
+    ? "/opt/homebrew" : "/usr/local"
+let brewInclude = "\(brewPrefix)/include"
+let brewLib = "\(brewPrefix)/lib"
 
 let brewSwiftSettings: [SwiftSetting] = [.unsafeFlags(["-Xcc", "-I\(brewInclude)"])]
 let brewLinkerSettings: [LinkerSetting] = [.unsafeFlags(["-L\(brewLib)"]), .linkedLibrary("c++")]

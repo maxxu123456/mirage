@@ -1,0 +1,91 @@
+name: Release
+
+# Tag a commit to publish a build:
+#     git tag v0.2.0 && git push origin v0.2.0
+# or run this workflow by hand and give it a version.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, for example 0.2.0"
+        required: true
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version $VERSION"
+
+      - name: Install shader toolchain
+        run: brew install glslang spirv-cross spirv-tools
+
+      - name: Test before releasing
+        run: swift test
+
+      - name: Build the app
+        env:
+          MIRAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: ./scripts/build-app.sh release
+
+      - name: Package
+        run: |
+          # ditto keeps the bundle's symlinks and permissions intact, which zip does not.
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/Mirage.app "Mirage-${{ steps.version.outputs.version }}.zip"
+          shasum -a 256 "Mirage-${{ steps.version.outputs.version }}.zip" | tee checksum.txt
+
+      - name: Write the release notes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          {
+            echo "## Mirage $VERSION"
+            echo
+            echo "Wallpaper Engine wallpapers on macOS. Download the zip, unzip it, and move"
+            echo "\`Mirage.app\` to /Applications."
+            echo
+            echo "This build is signed ad hoc rather than notarized, so the first launch needs"
+            echo "one extra step: right click the app, choose **Open**, then confirm. Or run:"
+            echo
+            echo '```sh'
+            echo "xattr -dr com.apple.quarantine /Applications/Mirage.app"
+            echo '```'
+            echo
+            echo "### Requirements"
+            echo
+            echo "* macOS 14 or later on Apple Silicon."
+            echo "* Scene wallpapers also need Wallpaper Engine's \`assets\` folder."
+            echo "  See the README for how to fetch it with SteamCMD."
+            echo
+            echo "### Checksum"
+            echo
+            echo '```'
+            cat checksum.txt
+            echo '```'
+          } > notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            "Mirage-${{ steps.version.outputs.version }}.zip" \
+            --title "Mirage ${{ steps.version.outputs.version }}" \
+            --notes-file notes.md

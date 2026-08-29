@@ -60,7 +60,7 @@ final class GeometryTests: XCTestCase {
     func testCopyQuadPutsTheImageTopRowAtTheTopOfTheScreen() {
         let quad = SceneGeometry.copyQuad(size: SIMD2(100, 50), ratio: SIMD2(1, 1))
         // The vertex at ortho y = 0 maps to clip y = -1, which FLIP_VERTEX_Y turns into
-        // Metal's top row — and it must carry v = 0, the first row of the texture.
+        // Metal's top row, and it must carry v = 0, the first row of the texture.
         let atOrthoZero = quad.filter { $0.y == 0 }
         XCTAssertFalse(atOrthoZero.isEmpty)
         for vertex in atOrthoZero { XCTAssertEqual(vertex.v, 0, accuracy: 0.0001) }

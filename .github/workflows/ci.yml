@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test
+    # arm64 runner: the shader toolchain is expected under /opt/homebrew.
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shader toolchain
+        run: brew install glslang spirv-cross spirv-tools
+
+      - name: Toolchain versions
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+      # The renderer needs a Metal device, so this only checks that the CLI links
+      # and starts. Rendering itself is verified locally against real wallpapers.
+      - name: Smoke test the CLI
+        run: |
+          swift build --product wetool
+          BIN="$(swift build --product wetool --show-bin-path)"
+          "$BIN/wetool" 2>&1 | head -1
+
+      - name: Assemble the app bundle
+        run: ./scripts/build-app.sh debug
+
+      - name: Check the bundle is relocatable
+        run: |
+          if otool -L build/Mirage.app/Contents/MacOS/Mirage | grep -qE '/opt/homebrew|/usr/local'; then
+            echo "bundle still links Homebrew paths"
+            otool -L build/Mirage.app/Contents/MacOS/Mirage
+            exit 1
+          fi
+          codesign --verify --deep --strict build/Mirage.app
+          echo "bundle is relocatable and signed"

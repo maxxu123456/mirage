@@ -188,7 +188,7 @@ public final class SceneRenderer {
             // `usertextures` name user properties and often resolve to nothing, so they
             // are tried first but fall back to the material's own texture list.
             // Wallpaper Engine takes the *lowest present* slot, which is normally 0 but is
-            // not forced to be — a material may leave slot 0 empty and start at 1.
+            // not forced to be, a material may leave slot 0 empty and start at 1.
             var candidates: [String] = []
             if let name = first.userTextures.compactMap({ $0 }).first { candidates.append(name) }
             if let name = first.textures.compactMap({ $0 }).first { candidates.append(name) }
@@ -207,7 +207,7 @@ public final class SceneRenderer {
                     objectTexture = textures.texture(named: name)
                     if objectTexture == nil {
                         let isVideo = textures.isVideoTexture(named: name)
-                        diagnostics.append("[\(object.id)] texture unavailable: \(name)\(isVideo ? " (video texture — not implemented yet)" : "")")
+                        diagnostics.append("[\(object.id)] texture unavailable: \(name)\(isVideo ? " (video texture, not implemented yet)" : "")")
                     }
                 }
             }
@@ -408,7 +408,7 @@ public final class SceneRenderer {
         return pass
     }
 
-    /// `uniform sampler2D g_TextureN; // {"combo":"MASK","require":{…}}` — emit the combo
+    /// `uniform sampler2D g_TextureN; // {"combo":"MASK","require":{…}}`, emit the combo
     /// when the slot is actually bound, or when the `require` clause says so.
     static func samplerCombos(source: ShaderProgramSource, passTextures: [Int: String],
                               overrideTextures: [Int: String], materialCombos: [String: Int],
@@ -503,7 +503,7 @@ public final class SceneRenderer {
                 prepend(index, e)
             }
         }
-        // 7. Binds — highest priority.
+        // 7. Binds, highest priority.
         for bind in spec.binds {
             if bind.name == "previous" {
                 prepend(bind.index, .passInput)
@@ -804,7 +804,7 @@ public final class SceneRenderer {
         }
 
         // A slot that resolves to nothing gets Wallpaper Engine's white default, except
-        // when the object's own texture is missing — white would blow out the whole scene.
+        // when the object's own texture is missing, white would blow out the whole scene.
         let fallback = layer.missingTexture ? textures.transparent : textures.white
         for binding in pass.fragmentTextureBindings {
             guard (0..<128).contains(binding.index) else { continue }

@@ -33,9 +33,9 @@ public struct ResolvedTransform {
 public struct LayerRect {
     public var left: Float      // m_pos.x
     public var right: Float     // m_pos.z
-    /// The larger value — the edge that ends up at the **bottom** of the screen (`m_pos.y`).
+    /// The larger value, the edge that ends up at the **bottom** of the screen (`m_pos.y`).
     public var yHigh: Float
-    /// The smaller value — the edge that ends up at the **top** of the screen (`m_pos.w`).
+    /// The smaller value, the edge that ends up at the **top** of the screen (`m_pos.w`).
     public var yLow: Float
 
     public var center: SIMD3<Float> { SIMD3((left + right) / 2, (yLow + yHigh) / 2, 0) }
@@ -108,7 +108,7 @@ public enum SceneGeometry {
 
     // MARK: Vertex buffers
 
-    /// Buffer A — the first ("copy") pass: positions in `(0…size)`, UVs cropped to the
+    /// Buffer A, the first ("copy") pass: positions in `(0…size)`, UVs cropped to the
     /// non-padded content. `ortho y = 0` carries `v = 0`, i.e. the image's top row.
     public static func copyQuad(size: SIMD2<Float>, ratio: SIMD2<Float>) -> [QuadVertex] {
         let w = size.x, h = size.y, cw = ratio.x, ch = ratio.y
@@ -148,7 +148,7 @@ public enum SceneGeometry {
         QuadVertex(1, -1, 0, 1, 0),
     ]
 
-    /// Buffer B — every intermediate effect pass: an NDC quad with identity MVP.
+    /// Buffer B, every intermediate effect pass: an NDC quad with identity MVP.
     public static let effectQuad: [QuadVertex] = [
         QuadVertex(-1, 1, 0, 0, 1),
         QuadVertex(-1, -1, 0, 0, 0),
@@ -158,7 +158,7 @@ public enum SceneGeometry {
         QuadVertex(1, -1, 0, 1, 0),
     ]
 
-    /// Buffer C — the final pass, drawn into the scene with `MVP_screen`.
+    /// Buffer C, the final pass, drawn into the scene with `MVP_screen`.
     /// The UVs are buffer B's, unless this is also the object's first pass.
     public static func sceneQuad(_ rect: LayerRect, uvRatio: SIMD2<Float>?) -> [QuadVertex] {
         let cw = uvRatio?.x ?? 1, ch = uvRatio?.y ?? 1

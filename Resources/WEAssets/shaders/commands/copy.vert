@@ -1,4 +1,4 @@
-// Virtual shader for effect passes declared as {"command":"copy"} — Wallpaper Engine
+// Virtual shader for effect passes declared as {"command":"copy"}, Wallpaper Engine
 // implements these internally, so no file for them ships in the assets folder.
 
 uniform mat4 g_ModelViewProjectionMatrix;

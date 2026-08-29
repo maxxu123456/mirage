@@ -11,7 +11,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${1:-release}"
 APP="$REPO/build/Mirage.app"
 BUNDLE_ID="com.mirage.wallpaper"
-VERSION="0.1.0"
+# Releases pass the tag through MIRAGE_VERSION; local builds get a default.
+VERSION="${MIRAGE_VERSION:-0.1.0}"
 
 echo "==> Building ($CONFIG)"
 cd "$REPO"

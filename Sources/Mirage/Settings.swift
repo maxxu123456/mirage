@@ -82,7 +82,7 @@ enum PowerState {
         return false
     }
 
-    /// True when a window covers the usable area of `screen` — either a fullscreen
+    /// True when a window covers the usable area of `screen`, either a fullscreen
     /// app or a maximised window leaves no wallpaper visible around the menu bar/dock.
     static func visibleWindowInfo() -> [[String: Any]]? {
         CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
