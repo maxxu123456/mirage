@@ -53,6 +53,12 @@ public final class CompiledPass {
     public let source: ShaderProgramSource
     public let program: ShaderCompiler.Program
     public var blending: WEBlendMode
+    /// The blending the material declared, before `relocateBlending` moved the
+    /// first pass's onto the last. Re-wiring a different subset has to start
+    /// from this or the original mode is lost after the first pass.
+    public var baseBlending: WEBlendMode = .normal
+    /// The render target this pass writes, if it names one.
+    public var targetName: String?
     public let depthTest: Bool
     public let depthWrite: Bool
     public let cull: Bool
@@ -105,7 +111,18 @@ public final class ImageLayer {
     public let object: WESceneObject
     public let model: WEModel
     public let objectScope: TargetScope
+    /// Every pass that compiled, including those belonging to effects that are
+    /// currently switched off.
+    public private(set) var allPasses: [CompiledPass] = []
+    /// The passes actually drawn this frame, wired for the active effects.
     public private(set) var passes: [CompiledPass] = []
+    /// One `visible` value per effect, index-aligned with `CompiledPass.effectIndex`.
+    var effectVisibility: [DynamicValue] = []
+    private var activeEffectMask: [Bool] = []
+    /// How many of this layer's effects are currently on.
+    var activeEffectCount: Int { activeEffectMask.filter { $0 }.count }
+    /// A layer that exists only to run effects over what is behind it.
+    var isPassthroughLayer = false
     public private(set) var size: SIMD2<Float>
     public private(set) var texture: GPUTexture?
     public private(set) var contentRatio: SIMD2<Float>
@@ -180,11 +197,36 @@ public final class ImageLayer {
         } ?? SIMD2(1, 1)
     }
 
-    func append(_ pass: CompiledPass) { passes.append(pass) }
+    func append(_ pass: CompiledPass) {
+        pass.baseBlending = pass.blending
+        allPasses.append(pass)
+        passes.append(pass)
+    }
+
+    /// Re-derives the drawn passes from which effects are on.
+    ///
+    /// Returns false when the mask is unchanged, which is the common case: this
+    /// runs every frame so that a property or a script can switch an effect on
+    /// or off without the wallpaper being reloaded.
+    @discardableResult
+    func setActiveEffects(_ mask: [Bool]) -> Bool {
+        guard mask != activeEffectMask else { return false }
+        activeEffectMask = mask
+        passes = allPasses.filter { pass in
+            guard let effect = pass.effectIndex else { return true }
+            return effect < mask.count ? mask[effect] : true
+        }
+        relocateBlending()
+        wirePasses()
+        return true
+    }
     func note(_ message: String) { diagnostics.append(message) }
 
     /// lwe moves the first pass's blending onto the last pass and makes the first opaque.
     func relocateBlending() {
+        // Start from what each material declared: this is re-run whenever the
+        // active set changes, and moving an already-moved mode would lose it.
+        for pass in passes { pass.blending = pass.baseBlending }
         guard passes.count > 1 else { return }
         let first = passes[0].blending
         passes[passes.count - 1].blending = first
@@ -206,7 +248,8 @@ public final class ImageLayer {
             pass.isLastOfObject = index == passes.count - 1
 
             var writesToTarget = false
-            if let targetName = passTargets[index] {
+            pass.isFinalCandidate = false
+            if let targetName = pass.targetName {
                 if scopeResolves(targetName, in: pass.scope) {
                     if !inTargetSequence {
                         effectInput = asInput
@@ -240,8 +283,6 @@ public final class ImageLayer {
         }
     }
 
-    /// `target` name per pass index, filled while building.
-    var passTargets: [Int: String] = [:]
 
     private func scopeResolves(_ name: String, in scope: TargetScope) -> Bool {
         scope.resolve(name) != nil

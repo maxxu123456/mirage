@@ -336,14 +336,17 @@ public final class SceneRenderer {
             // how an object points itself at another layer's composite.
             let material = instantiate(loaded, with: object.instance)
             let passthrough = model.passthrough || object.passthrough
-            let visibleEffects = object.effects.filter { $0.visible.resolveBool(store) }
-            // Passthrough layers only exist to run effects over the scene behind
-            // them, unless another layer samples this one's composite.
-            if passthrough && visibleEffects.isEmpty && !dependencyTargets.contains(object.id) { continue }
+            // Every effect is compiled, whether or not it is on right now, so
+            // that switching one on later needs no shader work. A passthrough
+            // layer with nothing to run is skipped per frame instead of here.
+            let visibleEffects = object.effects
 
             guard let layer = makeLayer(object: object, model: model, material: material,
                                         passthrough: passthrough, objectsById: objectsById) else { continue }
             buildPasses(layer: layer, material: material, visibleEffects: visibleEffects)
+            layer.effectVisibility = object.effects.map(\.visible)
+            layer.isPassthroughLayer = passthrough
+            layer.setActiveEffects(object.effects.map { $0.visible.resolveBool(store) })
             layer.relocateBlending()
             layer.wirePasses()
             layers.append(layer)
@@ -836,7 +839,7 @@ public final class SceneRenderer {
 
         for (index, spec) in specs.enumerated() {
             guard let compiled = compile(spec: spec, objectTexture: layer.texture, note: { layer.note($0) }) else { continue }
-            if let target = spec.target { layer.passTargets[layer.passes.count] = target }
+            compiled.targetName = spec.target
             if index == puppetSpecIndex { layer.puppetPassIndex = layer.passes.count }
             layer.append(compiled)
         }
@@ -1116,6 +1119,17 @@ public final class SceneRenderer {
         }
     }
 
+    /// Re-derives which effects are on, so a user property or a script can
+    /// switch one without the wallpaper being reloaded.
+    ///
+    /// Cheap enough to run every frame: one `resolveBool` per effect, and the
+    /// re-wiring only happens when the answer actually changed.
+    private func refreshEffectVisibility() {
+        for layer in layers where !layer.effectVisibility.isEmpty {
+            layer.setActiveEffects(layer.effectVisibility.map { $0.resolveBool(store) })
+        }
+    }
+
     /// Whether any particle emitter follows the music.
     private static func emittersFollowAudio(_ layers: [SceneLayerRef]) -> Bool {
         for entry in layers {
@@ -1335,6 +1349,7 @@ public final class SceneRenderer {
                                dayTime: Double(SceneRenderer.dayTime()), cursor: pointerPosition)
         }
         updateParallax(dt: dt)
+        refreshEffectVisibility()
 
         // Wallpaper Engine ignores `clearenabled` and always clears the scene target.
         let clearColor = scene.general.clearColor.resolve(store).vec3 ?? SIMD3(repeating: 1)
@@ -1364,6 +1379,9 @@ public final class SceneRenderer {
                 // own composite; it is only kept out of the scene draw.
                 let producesComposite = dependencyTargets.contains(layer.object.id)
                 guard visible || producesComposite else { continue }
+                // A passthrough layer with every effect off has nothing to do
+                // but copy the scene onto itself.
+                if layer.isPassthroughLayer, layer.activeEffectCount == 0, !producesComposite { continue }
                 if layer.object.kind == .text { refreshTextLayer(layer) }
                 let transform = SceneGeometry.resolveTransform(of: layer.object, objects: objectsById, store: store)
                 let parallax = parallaxOffset(for: layer.object)

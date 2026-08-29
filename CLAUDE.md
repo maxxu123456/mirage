@@ -171,9 +171,12 @@ Counted over the 12-wallpaper corpus, where 201 image objects render and the res
 
 Other limitations:
 
-* **Effect `visible` and combos resolve once at load.** Toggling a user property that gates an effect
-  (or changes a combo) needs the wallpaper reloaded. Object `visible`, colour, alpha,
-  origin/scale/angles and shader constants *are* re-evaluated every frame.
+* **An effect's `visible` is re-evaluated every frame**, so a user property or a script can switch an
+  effect on or off without a reload. Every effect is compiled at load whether or not it is on, and
+  the drawn pass list is re-derived from the active set only when that set actually changes; a
+  passthrough layer with all its effects off is skipped rather than copying the scene onto itself.
+  **Combos still resolve once at load**, so a property that changes a combo needs the wallpaper
+  reloaded, since that is a shader recompile rather than a re-wiring.
 * **A wallpaper's own properties are editable.** The library's detail panel offers the control each
   property's type asks for (toggle, slider, colour well, combo, text), hides one whose `condition`
   is false, and writes the edit into `UserDefaults` under `wallpaper.properties` keyed by item id.
@@ -738,15 +741,9 @@ with SteamCMD were needed to test it at all.
 
 In priority order, with everything needed already on disk:
 
-1. **Effect visibility without a reload.** Only the *set* of passes depends on the store at load:
-   `buildLayers` filters `object.effects` by `visible.resolveBool(store)`. Compiling every effect and
-   re-running `relocateBlending()` + `wirePasses()` over a filtered subset would make a property that
-   gates an effect live, and would make script-driven `effect.visible` work too. 46 effect `visible`
-   values across the corpus are bound to user properties, and only 15 of 308 effects are hidden at
-   default settings, so eager compilation costs about 5%.
-2. **Performance.** This is now the largest user-visible problem: `Pixel City` still runs at about
+1. **Performance.** This is now the largest user-visible problem: `Pixel City` still runs at about
    10 fps. The list in section 3 is unchanged and still ordered by expected impact.
-3. **Script-driven puppet animation.** `ScriptEngine`'s animation layer stubs accept `blend` and
+2. **Script-driven puppet animation.** `ScriptEngine`'s animation layer stubs accept `blend` and
    `rate` writes and drop them, so a script that plays an animation on a puppet has no effect. The
    layer write-back machinery from section 7.3 is what this needs.
 

@@ -420,6 +420,16 @@ case "render":
 
     // Simulated systems (particles, video) need several frames before they show anything,
     // so step the clock up to `time` over `frames` steps and keep the last image.
+    // --live name=value applies a property partway through, which is how the
+    // no-reload path is exercised: the result must match starting with it set.
+    var liveProperty: (String, JSON)?
+    if let pair = stringOption(rest, "--live"), let eq = pair.firstIndex(of: "=") {
+        let name = String(pair[pair.startIndex..<eq])
+        let raw = String(pair[pair.index(after: eq)...])
+        if let number = Double(raw) { liveProperty = (name, .number(number)) }
+        else if raw == "true" || raw == "false" { liveProperty = (name, .bool(raw == "true")) }
+        else { liveProperty = (name, .string(raw)) }
+    }
     let start = Date()
     var rgba = Data()
     var gpuTotal = 0.0
@@ -427,6 +437,9 @@ case "render":
         let t = frames == 1 ? time : time * Double(frame + 1) / Double(frames)
         // Only the frame that gets written needs the readback; timing the others
         // with it would measure a 20 MB copy the app never makes.
+        if frame == frames / 2, let (name, value) = liveProperty {
+            renderer.setUserProperty(name, value)
+        }
         let last = frame == frames - 1
         let data = try renderer.renderOffscreen(width: size.0, height: size.1, time: t, readback: last)
         if last { rgba = data }
