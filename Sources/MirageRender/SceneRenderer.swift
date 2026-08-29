@@ -65,6 +65,10 @@ public final class SceneRenderer {
     /// without scripts never pays for a JavaScript context.
     private var scripts: ScriptRuntime?
     private var sceneTexture: MTLTexture!
+    /// A mip-mapped copy of the scene, rebuilt at most once per frame and only
+    /// when something actually samples it.
+    private var mipTarget: MTLTexture?
+    private var mipTargetDirty = true
     private var scratch: [String: MTLTexture] = [:]
     /// Effects Mirage manufactures rather than loads from disk, currently only
     /// the bloom chain, which Wallpaper Engine ships as engine code and not as
@@ -233,8 +237,17 @@ public final class SceneRenderer {
         }
         sceneTexture = scene
         sceneScope.register("_rt_FullFrameBuffer", scene)
-        // lwe aliases the mip-mapped frame buffer to the scene target.
-        sceneScope.register("_rt_MipMappedFrameBuffer", scene)
+        // A real mip chain, refreshed from the scene when something samples it.
+        // Aliasing it to the scene target, as this used to, means a shader that
+        // asks for a blurred reflection by LOD always reads level 0.
+        if let mipped = makeTarget(name: "_rt_MipMappedFrameBuffer", width: renderWidth,
+                                   height: renderHeight, samplerKey: .linearClamp,
+                                   clearOnce: true, mipmapped: true) {
+            mipTarget = mipped
+            sceneScope.register("_rt_MipMappedFrameBuffer", mipped)
+        } else {
+            sceneScope.register("_rt_MipMappedFrameBuffer", scene)
+        }
         if let shadow = makeTarget(name: "_rt_shadowAtlas", width: renderWidth, height: renderHeight) {
             sceneScope.register("_rt_shadowAtlas", shadow)
             sceneScope.register("_alias_lightCookie", shadow)
@@ -256,13 +269,14 @@ public final class SceneRenderer {
     }
 
     private func makeTarget(name: String, width: Int, height: Int,
-                            samplerKey: SamplerKey = .linearClamp, clearOnce: Bool = true) -> MTLTexture? {
+                            samplerKey: SamplerKey = .linearClamp, clearOnce: Bool = true,
+                            mipmapped: Bool = false) -> MTLTexture? {
         guard width > 0, height > 0,
               width <= SceneRenderer.maximumRenderDimension,
               height <= SceneRenderer.maximumRenderDimension else { return nil }
         let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm,
                                                             width: width, height: height,
-                                                            mipmapped: false)
+                                                            mipmapped: mipmapped)
         desc.usage = [.renderTarget, .shaderRead]
         desc.storageMode = .private
         let texture = context.device.makeTexture(descriptor: desc)
@@ -1092,6 +1106,26 @@ public final class SceneRenderer {
         return Float((now.hour ?? 0) * 60 + (now.minute ?? 0)) / (24 * 60)
     }
 
+    /// Copies the scene into the mip-mapped target and builds its chain.
+    ///
+    /// Done lazily, at most once between scene draws, because most wallpapers
+    /// never sample it: only a shader asking for a rough reflection does.
+    private func refreshMipChain(commandBuffer: MTLCommandBuffer) {
+        guard mipTargetDirty, let mipTarget, let scene = sceneTexture,
+              let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+        mipTargetDirty = false
+        blit.label = "mirage.mipChain"
+        let width = min(scene.width, mipTarget.width)
+        let height = min(scene.height, mipTarget.height)
+        blit.copy(from: scene, sourceSlice: 0, sourceLevel: 0,
+                  sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                  sourceSize: MTLSize(width: width, height: height, depth: 1),
+                  to: mipTarget, destinationSlice: 0, destinationLevel: 0,
+                  destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+        if mipTarget.mipmapLevelCount > 1 { blit.generateMipmaps(for: mipTarget) }
+        blit.endEncoding()
+    }
+
     private enum UniformStage { case vertex, fragment }
 
     /// Binds a constant block, inline when it fits and through a buffer when it
@@ -1361,6 +1395,7 @@ public final class SceneRenderer {
             encoder.label = "mirage.clearScene"
             encoder.endEncoding()
         }
+        mipTargetDirty = true
 
         let projection = SceneGeometry.sceneProjection(width: Float(visibleWidth), height: Float(visibleHeight),
                                                        nearZ: scene.camera.nearZ, farZ: scene.camera.farZ,
@@ -1504,6 +1539,7 @@ public final class SceneRenderer {
                         producesComposite: Bool = false, globals: ShaderValueBag,
                         elapsed: Float, commandBuffer: MTLCommandBuffer) {
         let drawsToScene = pass.isFinalCandidate && visible
+        if drawsToScene { mipTargetDirty = true }
         let destinationSurface: LayerSurface = drawsToScene ? .scene : pass.destination
         guard let destination = texture(for: destinationSurface, layer: layer, scope: pass.scope) else {
             if debugLogging { print("  [\(layer.object.id)] \(pass.shaderName): NO DESTINATION \(destinationSurface)") }
@@ -1538,6 +1574,12 @@ public final class SceneRenderer {
             }
             if resolved == nil { resolved = previousTexture ?? inputTexture }
             if let resolved { bound[slot] = resolved }
+        }
+
+        // Rebuilding the mip chain is a blit, so it has to happen here, before
+        // this pass opens its render encoder, alongside the self-read copy.
+        if let mipTarget, bound.values.contains(where: { $0.texture === mipTarget }) {
+            refreshMipChain(commandBuffer: commandBuffer)
         }
 
         // Self-read protection: a pass may not sample the texture it is writing.
@@ -1576,6 +1618,10 @@ public final class SceneRenderer {
 
         for (slot, texture) in bound {
             bag.set("g_Texture\(slot)Resolution", .vec4(texture.resolution))
+            // The stock shaders pick a reflection's blur with
+            // `roughness * g_TextureNMipMapInfo`. It was never written, so the
+            // constant buffer's zero fill pinned every such lookup to level 0.
+            bag.set("g_Texture\(slot)MipMapInfo", Float(max(0, texture.texture.mipmapLevelCount - 1)))
             if let (rotation, translation) = texture.spriteTransform(at: Double(elapsed)) {
                 bag.set("g_Texture\(slot)Rotation", .vec4(rotation))
                 bag.set("g_Texture\(slot)Translation", .vec2(translation))
@@ -1824,7 +1870,7 @@ public final class SceneRenderer {
         }
         if let texture = layer.texture { bound[0] = texture }
         for (slot, texture) in bound {
-            bag.set("g_Texture\(slot)Resolution", .vec4(texture.resolution))
+                bag.set("g_Texture\(slot)Resolution", .vec4(texture.resolution))
         }
 
         let descriptor = MTLRenderPassDescriptor.color(sceneTexture, clear: nil)

@@ -186,8 +186,14 @@ Other limitations:
   point. `wetool render --property name=value` does the same thing without the app.
   What still needs a reload is an effect that is *gated* by a property, since the set of passes is
   resolved at load.
-* **`_rt_MipMappedFrameBuffer` is aliased to the scene target with no mip chain**, so shaders that
-  sample it by LOD (rough reflections) always read level 0.
+* **`_rt_MipMappedFrameBuffer` is a real mip chain**, rebuilt from the scene by a blit and
+  `generateMipmaps` at most once between scene draws, and only when a pass actually samples it. It
+  used to be aliased to the scene target, which has no chain. The other half of that bug was
+  `g_TextureNMipMapInfo` never being written: the stock shaders pick a reflection's blur with
+  `roughness * g_TextureNMipMapInfo`, and the constant buffer's zero fill pinned every such lookup to
+  level 0 whatever the chain held. Both are fixed. The rebuild is a blit, so it happens before the
+  pass opens its render encoder, next to the self-read copy: starting one inside an open render
+  encoder trips a Metal assertion.
 * **Multi-image animated textures** upload only image 0.
 * An image object's **material `instance`** is applied (it replaces material texture slots per
   object, which is how a layer points itself at another layer's composite), and an object whose
