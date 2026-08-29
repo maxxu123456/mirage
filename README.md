@@ -14,7 +14,7 @@ natively.
   water ripples, scrolling, perspective, colour grading, and so on), particle systems (rain, snow,
   dust, fireflies), text layers, scripted values (working clocks, day and night cycles, scripted
   animation), sprite sheet animation, embedded video textures, blend modes, mouse parallax, and the
-  wallpaper's own user properties.
+  wallpaper's own user properties, and bloom.
 * Plays a scene wallpaper's **sound layers**, with the app's mute and volume.
 * Runs **web wallpapers** in a web view, with their user properties and cursor tracking.
 * Plays **video wallpapers** (`.mp4`, `.mov`, `.m4v`) with gapless looping, and **image / GIF**

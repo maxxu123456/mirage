@@ -66,6 +66,10 @@ public final class SceneRenderer {
     private var scripts: ScriptRuntime?
     private var sceneTexture: MTLTexture!
     private var scratch: [String: MTLTexture] = [:]
+    /// Effects Mirage manufactures rather than loads from disk, currently only
+    /// the bloom chain, which Wallpaper Engine ships as engine code and not as
+    /// an `effect.json`.
+    private var syntheticEffects: [String: WEEffect] = [:]
     private var targetsNeedingInitialClear: [MTLTexture] = []
     private var targetSamplerKeys: [ObjectIdentifier: SamplerKey] = [:]
     private var renderTargetWrappers: [ObjectIdentifier: GPUTexture] = [:]
@@ -141,6 +145,7 @@ public final class SceneRenderer {
         try buildSceneTargets()
         buildLayers()
         buildParticleLayers()
+        buildBloomLayer()
         buildScripts()
         try clearInitialTargets()
     }
@@ -174,6 +179,20 @@ public final class SceneRenderer {
         if let shadow = makeTarget(name: "_rt_shadowAtlas", width: renderWidth, height: renderHeight) {
             sceneScope.register("_rt_shadowAtlas", shadow)
             sceneScope.register("_alias_lightCookie", shadow)
+        }
+        // The engine framebuffers the bloom chain works in, at the quarter and
+        // eighth scales Wallpaper Engine uses. Registered scene-wide, as WE has
+        // them, so a wallpaper naming one of them resolves it.
+        let quarter = (max(1, renderWidth / 4), max(1, renderHeight / 4))
+        let eighth = (max(1, renderWidth / 8), max(1, renderHeight / 8))
+        if let t = makeTarget(name: "_rt_4FrameBuffer", width: quarter.0, height: quarter.1) {
+            sceneScope.register("_rt_4FrameBuffer", t)
+        }
+        if let t = makeTarget(name: "_rt_8FrameBuffer", width: eighth.0, height: eighth.1) {
+            sceneScope.register("_rt_8FrameBuffer", t)
+        }
+        if let t = makeTarget(name: "_rt_Bloom", width: eighth.0, height: eighth.1) {
+            sceneScope.register("_rt_Bloom", t)
         }
     }
 
@@ -524,7 +543,7 @@ public final class SceneRenderer {
         }
 
         for (effectIndex, instance) in visibleEffects.enumerated() {
-            guard let effect = locator.effect(instance.file) else {
+            guard let effect = syntheticEffects[instance.file] ?? locator.effect(instance.file) else {
                 layer.note("effect not found: \(instance.file)")
                 continue
             }
@@ -804,6 +823,93 @@ public final class SceneRenderer {
         let now = Calendar.current.dateComponents([.hour, .minute], from: Date())
         return Float((now.hour ?? 0) * 60 + (now.minute ?? 0)) / (24 * 60)
     }
+
+    // MARK: Bloom
+
+    /// The id of the synthetic object that carries the bloom chain. Negative so
+    /// it can never collide with a real scene object.
+    static let bloomObjectID = -1
+
+    /// Builds the bloom chain, which Wallpaper Engine implements in engine code
+    /// rather than shipping as an `effect.json`.
+    ///
+    /// It is a full-screen passthrough layer appended after every other layer,
+    /// carrying one four-pass effect: the scene is copied aside, downsampled to
+    /// a quarter and then an eighth while being blurred on each axis, and
+    /// combined back over the copy into the scene framebuffer. The stock
+    /// materials do all the work; only the wiring is ours.
+    private func buildBloomLayer() {
+        let enabled = scene.general.bloom
+        // A wallpaper that hard-codes bloom off costs nothing. One that binds it
+        // to a user property always builds the layer, so the toggle stays live:
+        // `visible` is re-resolved every frame.
+        guard enabled.isBound || enabled.resolveBool(store, default: false) else { return }
+
+        let id = SceneRenderer.bloomObjectID
+        let sceneCopy = "_rt_imageLayerComposite_\(id)_a"
+        func pass(_ material: String, target: String, binds: [(String, Int)]) -> JSON {
+            .object([
+                "material": .string(material),
+                "target": .string(target),
+                "bind": .array(binds.map { .object(["name": .string($0.0), "index": .number(Double($0.1))]) }),
+            ])
+        }
+        syntheticEffects[SceneRenderer.bloomEffectFile] = WEEffect(json: .object([
+            "name": .string("bloom"),
+            "passes": .array([
+                pass("materials/util/downsample_quarter_bloom.json", target: "_rt_4FrameBuffer",
+                     binds: [("_rt_FullFrameBuffer", 0)]),
+                pass("materials/util/downsample_eighth_blur_v.json", target: "_rt_8FrameBuffer",
+                     binds: [("_rt_4FrameBuffer", 0)]),
+                pass("materials/util/blur_h_bloom.json", target: "_rt_Bloom",
+                     binds: [("_rt_8FrameBuffer", 0)]),
+                pass("materials/util/combine.json", target: "_rt_FullFrameBuffer",
+                     binds: [(sceneCopy, 0), ("_rt_Bloom", 1)]),
+            ]),
+        ]))
+
+        // The strength, threshold and tint travel as raw JSON rather than
+        // resolved numbers, so a value bound to a user property stays bound and
+        // is re-resolved every frame like any other shader constant.
+        let general = scene.raw["general"]
+        let constants = JSON.object([
+            "bloomstrength": general["bloomstrength"],
+            "bloomthreshold": general["bloomthreshold"],
+            "bloomtint": general["bloomtint"],
+        ])
+        let object = WESceneObject(json: .object([
+            "id": .number(Double(id)),
+            "name": .string("mirage_bloom"),
+            "image": .string("models/mirage/bloomlayer.json"),
+            "visible": general["bloom"].isNull ? .bool(true) : general["bloom"],
+            "origin": .string("\(sceneWidth / 2) \(sceneHeight / 2) 0"),
+            "effects": .array([.object([
+                "file": .string(SceneRenderer.bloomEffectFile),
+                "id": .number(Double(id)),
+                "name": .string("bloom"),
+                "passes": .array([.object(["constantshadervalues": constants])]),
+            ])]),
+        ]))
+
+        guard let model = locator.model("models/mirage/bloomlayer.json"),
+              let material = locator.material(model.material) else {
+            diagnostics.append("bloom: the stock passthrough model or material is missing")
+            return
+        }
+        guard let layer = makeLayer(object: object, model: model, material: material,
+                                    passthrough: true, objectsById: [:]) else {
+            diagnostics.append("bloom: the layer could not be built")
+            return
+        }
+        buildPasses(layer: layer, material: material, visibleEffects: object.effects)
+        layer.relocateBlending()
+        layer.wirePasses()
+        layers.append(layer)
+        orderedLayers.append(.image(layer))
+        diagnostics.append(contentsOf: layer.diagnostics.map { "[bloom] \($0)" })
+    }
+
+    static let bloomEffectFile = "effects/mirage/bloom.json"
 
     // MARK: Scripts
 

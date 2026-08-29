@@ -23,7 +23,10 @@ public struct WEScene {
         public var skylightColor = DynamicValue(value: .string("0.3 0.3 0.3"))
         public var bloom = DynamicValue(value: .bool(false))
         public var bloomStrength = DynamicValue(value: .number(2))
-        public var bloomThreshold = DynamicValue(value: .number(0.5))
+        // 0.65 is both what real scenes carry and what downsample_quarter_bloom
+        // declares as its annotation default.
+        public var bloomThreshold = DynamicValue(value: .number(0.65))
+        public var bloomTint = DynamicValue(value: .string("1 1 1"))
         public var cameraParallax = DynamicValue(value: .bool(false))
         public var cameraParallaxAmount = DynamicValue(value: .number(1))
         public var cameraParallaxDelay = DynamicValue(value: .number(0.1))
@@ -72,6 +75,7 @@ public struct WEScene {
         gen.bloom = dyn("bloom", gen.bloom)
         gen.bloomStrength = dyn("bloomstrength", gen.bloomStrength)
         gen.bloomThreshold = dyn("bloomthreshold", gen.bloomThreshold)
+        gen.bloomTint = dyn("bloomtint", gen.bloomTint)
         gen.cameraParallax = dyn("cameraparallax", gen.cameraParallax)
         gen.cameraParallaxAmount = dyn("cameraparallaxamount", gen.cameraParallaxAmount)
         gen.cameraParallaxDelay = dyn("cameraparallaxdelay", gen.cameraParallaxDelay)

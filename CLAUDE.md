@@ -77,7 +77,7 @@ com.mirage.wallpaper` resets it. Run `build/Mirage.app/Contents/MacOS/Mirage` di
 | `Sources/Mirage/` | The app: menu bar, desktop windows, library, settings. |
 | `Sources/wetool/` | Developer CLI. |
 | `Sources/CShaderTools/` | System-library shim exposing glslang's and SPIRV-Cross's C APIs to Swift. |
-| `Resources/WEAssets/` | The few WE built-ins that ship as no file at all, currently `shaders/commands/copy.{vert,frag}`, used by effect passes declared as `{"command":"copy"}`. |
+| `Resources/WEAssets/` | The few WE built-ins that ship as no file at all: `shaders/commands/copy.{vert,frag}` for effect passes declared as `{"command":"copy"}`, and `models/mirage/bloomlayer.json`, the full-screen model the synthetic bloom chain hangs off. |
 | `Tests/` | `WEKitTests` (formats, preprocessing, scripting) and `MirageRenderTests` (geometry/uniform invariants). |
 | `scripts/build-app.sh` | Bundle assembly. Set `MIRAGE_VERSION` to stamp a version. |
 | `.github/workflows/` | `ci.yml` builds, tests and assembles the bundle on every push. `release.yml` publishes a zipped `Mirage.app` when a `v*` tag is pushed. |
@@ -141,6 +141,9 @@ and ping-pong wiring), `SceneRenderer` (scene build, frame loop, present, offscr
   Wallpaper Engine JS shim: user properties reach `wallpaperPropertyListener`, the cursor reaches
   `wallpaperMouseX/Y` and a synthesised `mousemove`, `wallpaperRegisterAudioListener` gets its 128
   bins (silent, since there is no capture), and pausing holds `requestAnimationFrame` and the media.
+* **Bloom**: `general.bloom` renders, through the same four stock materials Wallpaper Engine uses.
+  Two corpus wallpapers enable it by default (`Pixel Pokemon`, `Spring City`), and its strength and
+  threshold stay bound to their user properties.
 * **Sound**: a wallpaper's `sound` objects play, in `loop` or `random` mode, with the start delay,
   the `startsilent` fade, the app's mute and volume, and a per-object volume that is re-resolved
   every frame so a user property or a script can drive it. Clips are extracted from `scene.pkg` once
@@ -159,7 +162,6 @@ Counted over the 12-wallpaper corpus, where 201 image objects render and the res
 |---|---|---|
 | **Media integration** | 1 | `mediaPlaybackChanged` is told once that nothing is playing, which is the truth, but a now-playing title, artist or album art never arrives, so a media wallpaper shows its idle layout. |
 | **Puppet warp** (`.mdl`) | 1 | The skinned layer draws as a static quad. `Sources/WEKit/PuppetModel.swift` parses the format and computes bone matrices, but the renderer does not yet emit the `SKINNING` / `BONECOUNT` combos, the skinned vertex layout or `g_Bones`. |
-| **Bloom** (`general.bloom`) | 0 | - |
 | **Lights / `shape`** | 0 | `PerformLighting_V1` is stubbed to return black. |
 | **Audio visualiser** | - | `g_AudioSpectrum*` are zeros, so audio-reactive layers stay flat. Needs system-audio capture, which needs a screen-recording permission. |
 | **Rope particle renderers** | 5 of 69 | `rope` and `ropetrail` fall back to sprites; they need `genericropeparticle` and a Catmull-Rom spline. |
@@ -597,7 +599,14 @@ like every other effect combo.
 `wetool scripts <dir> [--frames N] [--object NAME]` runs the whole scripting layer with no Metal and
 no renderer, which is how you tell a broken script from a broken pass chain.
 
-### 7.4 Sound and web: built, plus bloom and puppets
+### 7.4 Sound, web and bloom: built, plus puppets
+
+*Sound*: `WallpaperSoundPlayer` extracts `sounds/*` from the pkg into
+`~/Library/Caches/Mirage/audio` once, then plays them with `AVAudioPlayer` in `loop` or `random`
+mode after `rand(mintime, maxtime)`, at `object.volume x appVolume x (muted ? 0 : 1)`.
+`SceneWallpaperView` owns one per wallpaper and drives it from the same clock the renderer gets, so
+delays and the `startsilent` fade stay in step with the visuals and stop when the wallpaper pauses.
+`wetool sound <dir>` plays a scene's audio with no renderer.
 
 *Web*: `WebWallpaperView` loads the wallpaper's `index.html` with read access scoped to its project
 folder, and injects a shim providing `wallpaperPropertyListener`, `wallpaperRegisterAudioListener`,
@@ -606,20 +615,32 @@ per-frame hook the way an `MTKView` does, so it polls the cursor on a 30 Hz time
 the wallpaper. Known gaps: audio is silence, media integration is inert, and pausing holds
 `requestAnimationFrame` and media but not CSS animations or `setInterval`.
 
+*Bloom*: Wallpaper Engine implements bloom in engine code, not as an `effect.json`, so
+`SceneRenderer.buildBloomLayer` manufactures one. A full-screen passthrough object with id `-1` is
+appended after every other layer, carrying a four-pass effect over the stock materials:
 
-*Sound*: `WallpaperSoundPlayer` extracts `sounds/*` from the pkg into
-`~/Library/Caches/Mirage/audio` once, then plays them with `AVAudioPlayer` in `loop` or `random`
-mode after `rand(mintime, maxtime)`, at `object.volume × appVolume × (muted ? 0 : 1)`.
-`SceneWallpaperView` owns one per wallpaper and drives it from the same clock the renderer gets, so
-delays and the `startsilent` fade stay in step with the visuals and stop when the wallpaper pauses.
-`wetool sound <dir>` plays a scene's audio with no renderer.
+```
+passthrough                 -> _rt_imageLayerComposite_-1_a   (the scene, copied aside)
+downsample_quarter_bloom    -> _rt_4FrameBuffer               (scene/4, thresholded)
+downsample_eighth_blur_v    -> _rt_8FrameBuffer               (scene/8, blurred)
+blur_h_bloom                -> _rt_Bloom                      (blurred on the other axis)
+combine                     -> _rt_FullFrameBuffer            (copy + bloom, back into the scene)
+```
 
+The three engine framebuffers are registered scene-wide in `buildSceneTargets`, as WE has them. The
+copy exists because the last pass writes back into the scene target and cannot read it at the same
+time. `bloomstrength` / `bloomthreshold` / `bloomtint` travel as **raw JSON** into the effect pass's
+`constantshadervalues`, so a value bound to a user property stays bound and is re-resolved every
+frame; passing resolved numbers would freeze the sliders. The layer is built whenever `bloom` is
+bound, even if it currently resolves false, so the toggle works without a reload; a scene that
+hard-codes `"bloom": false` builds nothing.
 
-*Bloom*: when `general.bloom`, append a synthetic full-screen chain, downsample ¼ → ⅛, blur,
-`_rt_Bloom`, combine, using `_rt_4FrameBuffer` and `_rt_8FrameBuffer`.
-*Puppet warp*: `.mdl` (`MDLV0021` / `MDLV0023`) carries a skinned mesh, bones and animations; the
-vertex shader wants `SKINNING=1`, `BONECOUNT=n`, `g_Bones[]` (`mat4x3`) and the `a_BlendIndices` /
-`a_BlendWeights` attributes.
+Two things not done: the **HDR** bloom path (`general.hdr`, `bloomhdr*`) is a genuinely different
+chain of iterative down/up-sampling and is not implemented, so an HDR scene gets the LDR
+approximation; and the model is `Resources/WEAssets/models/mirage/bloomlayer.json` rather than the
+stock `models/util/fullscreenlayer.json` because that one declares `translucent` blending, which
+`relocateBlending` would move onto the combine pass. It happens to work (combine writes alpha 1) but
+only by accident.
 
 ---
 

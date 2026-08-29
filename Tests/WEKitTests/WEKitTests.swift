@@ -160,6 +160,40 @@ final class WEKitTests: XCTestCase {
         XCTAssertFalse(store.evaluateCondition(String(repeating: "!", count: 300) + "true"))
     }
 
+    /// The bloom chain is manufactured rather than loaded, so nothing else would
+    /// catch a typo in the pass order or a bind that names the wrong target.
+    func testBloomChainShape() {
+        func pass(_ material: String, _ target: String, _ binds: [(String, Int)]) -> JSON {
+            .object([
+                "material": .string(material),
+                "target": .string(target),
+                "bind": .array(binds.map { .object(["name": .string($0.0), "index": .number(Double($0.1))]) }),
+            ])
+        }
+        let effect = WEEffect(json: .object(["name": .string("bloom"), "passes": .array([
+            pass("materials/util/downsample_quarter_bloom.json", "_rt_4FrameBuffer", [("_rt_FullFrameBuffer", 0)]),
+            pass("materials/util/downsample_eighth_blur_v.json", "_rt_8FrameBuffer", [("_rt_4FrameBuffer", 0)]),
+            pass("materials/util/blur_h_bloom.json", "_rt_Bloom", [("_rt_8FrameBuffer", 0)]),
+            pass("materials/util/combine.json", "_rt_FullFrameBuffer",
+                 [("_rt_imageLayerComposite_-1_a", 0), ("_rt_Bloom", 1)]),
+        ])]))
+        XCTAssertEqual(effect.passes.count, 4)
+        XCTAssertEqual(effect.passes.map(\.target),
+                       ["_rt_4FrameBuffer", "_rt_8FrameBuffer", "_rt_Bloom", "_rt_FullFrameBuffer"])
+        // The scene copy the combine reads has to be the bloom object's own
+        // composite, which is named from its id.
+        XCTAssertEqual(effect.passes[3].binds.first?.name, "_rt_imageLayerComposite_-1_a")
+    }
+
+    /// Bloom strength and threshold are usually bound to user properties, and
+    /// have to stay bound so the sliders keep working.
+    func testBloomStrengthStaysBound() {
+        let bound = DynamicValue.parse(.object(["user": .string("bloomstrength"), "value": .number(4)]))
+        XCTAssertTrue(bound.isBound)
+        let store = PropertyStore(properties: [], overrides: ["bloomstrength": .number(1.5)])
+        XCTAssertEqual(bound.resolveFloat(store), 1.5)
+    }
+
     func testSceneDefaultsMatchRendererSpec() {
         let scene = WEScene(json: .object([:]))
         XCTAssertEqual(scene.general.clearColor.resolve(nil).vec3, SIMD3<Float>(1, 1, 1))
