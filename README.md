@@ -14,6 +14,7 @@ Engine's renderer, and video, image and GIF wallpapers play natively.
   dust, fireflies), text layers, scripted values (working clocks, day and night cycles, scripted
   animation), sprite sheet animation, embedded video textures, blend modes, mouse parallax, and the
   wallpaper's own user properties.
+* Plays a scene wallpaper's **sound layers**, with the app's mute and volume.
 * Plays **video wallpapers** (`.mp4`, `.mov`, `.m4v`) with gapless looping, and **image / GIF**
   wallpapers.
 * **One wallpaper per display**, remembered across restarts.
@@ -93,15 +94,14 @@ and their effects render; these do not:
 
 | Not implemented | What you notice |
 |---|---|
-| Sound layers | Wallpaper sound effects stay silent |
 | Media integration | A wallpaper that shows the song you are playing shows its idle layout instead |
 | Puppet warp | A skinned layer is drawn without its animation |
 | Audio visualiser | Audio reactive layers stay still |
 | Web wallpapers | Not supported |
 | Rope particles | Rope and rope trail emitters draw as ordinary sprites |
 
-Particles, text layers, embedded video textures and scripts all work, so clocks show the real time
-and scripted animation runs.
+Particles, text layers, embedded video textures, sound and scripts all work, so clocks show the real
+time and scripted animation runs.
 
 Very heavy wallpapers (roughly 40 layers on a 5K scene) currently render at about 10 frames per
 second. Most render comfortably at the default 30 frame cap.
@@ -123,6 +123,7 @@ swift test
 .build/debug/wetool pipelines "/path/to/wallpaper"          # compile every shader variant
 .build/debug/wetool render    "/path/to/wallpaper" out.png --time 2 --size 1280x720
 .build/debug/wetool scripts   "/path/to/wallpaper"          # run its scripts, with no renderer
+.build/debug/wetool sound     "/path/to/wallpaper"          # play its sound objects
 ```
 
 `CLAUDE.md` is the deep technical reference: the file formats, the shader translation pipeline, the

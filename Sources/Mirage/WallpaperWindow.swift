@@ -45,10 +45,13 @@ final class SceneWallpaperView: MTKView {
     private var pausedAt: Double?
     private var hasDrawnFrame = false
     private var pendingPause = false
+    /// The scene's `sound` objects. Nil when it has none, which is most of them.
+    private var sound: WallpaperSoundPlayer?
 
-    init(renderer: SceneRenderer, context: RenderContext) {
+    init(renderer: SceneRenderer, context: RenderContext, muted: Bool, volume: Float) {
         self.renderer = renderer
         super.init(frame: .zero, device: context.device)
+        buildSound(muted: muted, volume: volume)
         colorPixelFormat = .rgba8Unorm
         framebufferOnly = true
         autoResizeDrawable = true
@@ -60,6 +63,40 @@ final class SceneWallpaperView: MTKView {
 
     @available(*, unavailable)
     required init(coder: NSCoder) { fatalError("not supported") }
+
+    /// Builds the sound player from the scene's `sound` objects.
+    ///
+    /// `WESceneObject` keeps the timing fields in `raw`, since only the volume
+    /// is ever a binding, and the volume is resolved through the property store
+    /// so a wallpaper whose volume is a user property starts at the right level.
+    private func buildSound(muted: Bool, volume: Float) {
+        let objects = renderer.scene.objects.filter { $0.kind == .sound }
+        guard !objects.isEmpty else { return }
+        let player = WallpaperSoundPlayer(locator: renderer.locator,
+                                          workshopId: renderer.project.workshopId)
+        for object in objects {
+            player.add(paths: object.sounds,
+                       mode: object.playbackMode ?? "loop",
+                       volume: object.volume.resolveFloat(renderer.store, default: 1),
+                       minTime: object.raw["mintime"].double ?? 0,
+                       maxTime: object.raw["maxtime"].double ?? 0,
+                       startSilent: object.raw["startsilent"].bool ?? false)
+        }
+        player.setVolume(volume, muted: muted)
+        player.start()
+        sound = player
+    }
+
+    /// Releases the audio players. The view is torn down with the wallpaper, and
+    /// nothing else stops the sound.
+    func stop() {
+        sound?.stop()
+        sound = nil
+    }
+
+    func setMuted(_ muted: Bool, volume: Float) {
+        sound?.setVolume(volume, muted: muted)
+    }
 
     var fpsCap: Int {
         get { preferredFramesPerSecond }
@@ -81,6 +118,7 @@ final class SceneWallpaperView: MTKView {
             startTime = CACurrentMediaTime()
         }
         isPaused = paused
+        sound?.setPaused(paused)
     }
 
     private var elapsed: Double {
@@ -100,7 +138,9 @@ final class SceneWallpaperView: MTKView {
         if let window { updatePointer(NSEvent.mouseLocation, in: window.frame) }
         guard let drawable = currentDrawable,
               let commandBuffer = renderer.context.commandQueue.makeCommandBuffer() else { return }
-        renderer.render(into: drawable.texture, time: elapsed, commandBuffer: commandBuffer)
+        let time = elapsed
+        sound?.update(time: time)
+        renderer.render(into: drawable.texture, time: time, commandBuffer: commandBuffer)
         commandBuffer.present(drawable)
         commandBuffer.commit()
         if !hasDrawnFrame {

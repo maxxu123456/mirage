@@ -205,6 +205,34 @@ final class ScriptTests: XCTestCase {
         XCTAssertTrue(engine.diagnostics.isEmpty, "\(engine.diagnostics)")
     }
 
+    /// A controller script animates layers it does not drive, so its writes have
+    /// to be read back off the JavaScript objects and published, or the layers
+    /// never move.
+    func testWritesToOtherLayersAreReadBack() {
+        let store = PropertyStore(properties: [])
+        let runtime = ScriptRuntime(workshopId: nil, canvasSize: SIMD2(1920, 1080),
+                                    store: store, locator: nil)
+        runtime.seed(object: "controller", values: ["alpha": .number(1)])
+        runtime.seed(object: "disc", values: ["origin": .string("0 0 0"), "alpha": .number(1)])
+        let script = """
+        export function update(value) {
+            var disc = thisScene.getLayer('disc');
+            disc.origin = new Vec3(10, 20, 0);
+            disc.alpha = 0;
+            return value;
+        }
+        """
+        let driven = DynamicValue.parse(.object(["script": .string(script), "value": .bool(true)]))
+        runtime.register(driven, object: "controller", property: "visible")
+        runtime.beginFrame(time: 0, frameTime: 0, dayTime: 0, cursor: SIMD2(0.5, 0.5))
+
+        let values = store.scriptValues
+        XCTAssertEqual(values?.layerValue(object: "disc", property: "origin")?.vec3, SIMD3<Float>(10, 20, 0))
+        XCTAssertEqual(values?.layerValue(object: "disc", property: "alpha")?.float, 0)
+        XCTAssertNil(values?.layerValue(object: "controller", property: "origin"),
+                     "an untouched property must fall through to the object's own value")
+    }
+
     func testTimeOfDayReachesTheScript() {
         let engine = ScriptEngine(workshopId: nil)
         let script = "export function update(value) { return engine.timeOfDay; }"

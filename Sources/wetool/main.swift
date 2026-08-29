@@ -14,10 +14,11 @@ import UniformTypeIdentifiers
 //   wetool compile-all <project-dir>                            (compiles every shader referenced by the scene)
 //   wetool render <project-dir> <out.png> [--time t] [--size WxH]
 //   wetool scripts <project-dir> [--frames N] [--object NAME]  (runs SceneScript with no Metal)
+//   wetool sound <project-dir> [--seconds N]                    (plays the scene's sound objects)
 
 let args = CommandLine.arguments.dropFirst()
 guard let command = args.first else {
-    print("usage: wetool <ls|info|tex|shader|compile-all|render|pipelines|scripts> ...")
+    print("usage: wetool <ls|info|tex|shader|compile-all|render|pipelines|scripts|sound> ...")
     exit(2)
 }
 
@@ -101,7 +102,7 @@ case "scripts":
                                 canvasSize: SIMD2(width, height), store: store, locator: locator)
     var scripted: [(value: DynamicValue, object: String, property: String)] = []
     for object in scene.objects {
-        let name = object.name.isEmpty ? "object\(object.id)" : object.name
+        let name = object.scriptName
         var values: [String: JSON] = [
             "name": .string(object.name), "id": .number(Double(object.id)),
             "origin": object.origin.resolve(store), "scale": object.scale.resolve(store),
@@ -132,10 +133,51 @@ case "scripts":
         let changed = produced == entry.value.value ? "unchanged" : "-> \(produced)"
         print("  \(entry.object).\(entry.property): \(entry.value.value) \(changed)")
     }
+    if let watched = stringOption(rest, "--watch") {
+        print("layer writes on \(watched): \(runtime.layerWrites[watched] ?? [:])")
+    }
     if !runtime.diagnostics.isEmpty {
         print("diagnostics:")
         for d in runtime.diagnostics { print("  \(d)") }
     }
+
+case "sound":
+    // Plays a scene's sound objects for a few seconds, with no renderer, which is
+    // the only way to hear whether extraction and the start delays work.
+    guard let dir = rest.first else { fail("usage: wetool sound <dir> [--seconds N]") }
+    let seconds = Double(intOption(rest, "--seconds") ?? 6)
+    let (project, locator) = makeLocator(dir)
+    guard let sceneJSON = locator.json(project.file) else { fail("no scene file") }
+    let scene = WEScene(json: sceneJSON)
+    let store = PropertyStore(properties: project.properties)
+    let sounds = scene.objects.filter { $0.kind == .sound }
+    print("\(sounds.count) sound objects")
+    for object in sounds {
+        print("  \(object.name): mode=\(object.playbackMode ?? "loop") "
+              + "volume=\(object.volume.resolveFloat(store, default: 1)) "
+              + "delay=\(object.raw["mintime"].double ?? 0)...\(object.raw["maxtime"].double ?? 0) "
+              + "startsilent=\(object.raw["startsilent"].bool ?? false)")
+        for path in object.sounds { print("     \(path)") }
+    }
+    let player = WallpaperSoundPlayer(locator: locator, workshopId: project.workshopId)
+    for object in sounds {
+        player.add(paths: object.sounds, mode: object.playbackMode ?? "loop",
+                   volume: object.volume.resolveFloat(store, default: 1),
+                   minTime: object.raw["mintime"].double ?? 0,
+                   maxTime: object.raw["maxtime"].double ?? 0,
+                   startSilent: object.raw["startsilent"].bool ?? false)
+    }
+    player.setVolume(1, muted: false)
+    player.start()
+    var t = 0.0
+    while t < seconds {
+        player.update(time: t)
+        Thread.sleep(forTimeInterval: 1.0 / 30)
+        t += 1.0 / 30
+    }
+    player.stop()
+    if player.diagnostics.isEmpty { print("no diagnostics") }
+    else { for d in player.diagnostics { print("  \(d)") } }
 
 case "tex":
     guard rest.count >= 3 else { fail("usage: wetool tex <dir> <material-name> <out.png>") }

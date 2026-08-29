@@ -97,14 +97,15 @@ to an r8 coverage texture), `VideoTexture` (`AVAssetReader` to `CVMetalTextureCa
 `RenderContext` (device, pipeline/sampler caches, blit-and-present MSL), `TextureStore`
 (`WETexture` → `MTLTexture`), `RenderTargetPool`, `UniformWriter` (reflection-driven constant-buffer
 packing + matrix helpers), `SceneGeometry` (transforms, quads, projection), `ImageLayer` (pass chain
-and ping-pong wiring), `SceneRenderer` (scene build, frame loop, present, offscreen render).
+and ping-pong wiring), `SceneRenderer` (scene build, frame loop, present, offscreen render), `SoundPlayer`
+(`WallpaperSoundPlayer`, extraction and playback of a scene's `sound` objects).
 
 **Mirage**: `MirageApp` (`@main`, `MenuBarExtra` + library `Window` + `Settings`), `WallpaperWindow`
 (desktop-level `NSWindow`; `SceneWallpaperView` = MTKView → `SceneRenderer`; `VideoWallpaperView` =
 `AVQueuePlayer` + `AVPlayerLooper`; `ImageWallpaperView`), `Library` (folder scanning →
 `WallpaperItem`), `WallpaperController` (per-display assignment, persistence, pause rules),
-`LibraryView`, `SettingsView`, `Settings` (plus `PowerState`), and two subsystems that are written and
-compile but are not wired up yet: `SoundPlayer` and `WebWallpaperView`.
+`LibraryView`, `SettingsView`, `Settings` (plus `PowerState`), and `WebWallpaperView`, which is
+written and compiles but is not wired up yet.
 
 ---
 
@@ -135,6 +136,9 @@ compile but are not wired up yet: `SoundPlayer` and `WebWallpaperView`.
 * **Video textures**: a `TEXB0004` `.tex` whose payload is an MP4 decodes on a background queue
   through `AVAssetReader` and `CVMetalTextureCache`, and the current frame is swapped in as the
   scene clock advances. `Pixel Pokemon`'s animated background now renders.
+* **Sound**: a wallpaper's `sound` objects play, in `loop` or `random` mode, with the start delay,
+  the `startsilent` fade, and the app's mute and volume. Clips are extracted from `scene.pkg` once
+  into `~/Library/Caches/Mirage/audio`.
 * **Scripts (SceneScript)**: one `JSContext` per wallpaper running every `{"script": …}` value.
   All **118 scripted values** in the corpus register and run with **zero diagnostics**. Clocks and
   dates show the real time, the Zelda wallpaper's day/night cycle follows the system clock, and
@@ -148,7 +152,6 @@ Counted over the 12-wallpaper corpus, where 201 image objects render and the res
 | Missing | In corpus | Effect |
 |---|---|---|
 | **Media integration** | 1 | `mediaPlaybackChanged` is told once that nothing is playing, which is the truth, but a now-playing title, artist or album art never arrives, so a media wallpaper shows its idle layout. |
-| **Sound objects** | 7 | Silent. `Sources/Mirage/SoundPlayer.swift` is written and compiles but nothing constructs it yet. This is now the biggest gap. |
 | **Puppet warp** (`.mdl`) | 1 | The skinned layer draws as a static quad. `Sources/WEKit/PuppetModel.swift` parses the format and computes bone matrices, but the renderer does not yet emit the `SKINNING` / `BONECOUNT` combos, the skinned vertex layout or `g_Bones`. |
 | **Bloom** (`general.bloom`) | 0 | - |
 | **Lights / `shape`** | 0 | `PerformLighting_V1` is stubbed to return black. |
@@ -538,20 +541,38 @@ Four things about the design, each of which cost a debugging session:
   throws on the first frame. WE's order is `init`, then the properties, then the first update.
 * **Layer objects are seeded with the scene's real values** before anything registers, because a
   script reads the layer it drives and its neighbours (`thisScene.getLayer("x").origin`).
+* **A script's writes are read back off the layer objects after every frame.** Controller scripts
+  animate layers they do not drive (one script fades and moves a whole group by assigning
+  `layer.alpha` and `layer.origin`), and those writes exist only in JavaScript until they are
+  published into `ScriptValues` and consulted where the renderer resolves an object's transform,
+  colour, alpha, brightness, visibility and text. The baseline for "what changed" is a read-back
+  taken straight after seeding, not the seeded dictionary, because a layer object also carries
+  defaults for properties the scene never set.
+
+The `JSContext` is built on the scene loader queue and then used from the render thread. That is
+safe only because the handoff is strictly ordered (the view is installed after the scene finishes
+building) and nothing touches the context concurrently. Keep it that way.
 
 What is stubbed: no puppet animation (`getAnimationLayer` and friends answer, inertly), no media
 integration beyond a single "nothing is playing" event, no cursor events, and no execution timeout
 (JSC's is private API), so a runaway script would hang the render thread. Scripts that throw are
-disabled after five failures.
+disabled after five failures, keeping their last good value rather than snapping back to the
+stored default. An effect's `visible` is registered and evaluated but still only *applied* at load,
+like every other effect combo.
 
 `wetool scripts <dir> [--frames N] [--object NAME]` runs the whole scripting layer with no Metal and
 no renderer, which is how you tell a broken script from a broken pass chain.
 
-### 7.4 Sound, bloom, puppets
+### 7.4 Sound: built, plus bloom and puppets
 
-*Sound*: extract `sounds/*` to a cache directory, one `AVAudioPlayer` chain per object, `loop` and
-`random` playback modes, start after `rand(mintime, maxtime)`, effective volume
-`object.volume × appVolume × (muted ? 0 : 1)`.
+*Sound*: `WallpaperSoundPlayer` extracts `sounds/*` from the pkg into
+`~/Library/Caches/Mirage/audio` once, then plays them with `AVAudioPlayer` in `loop` or `random`
+mode after `rand(mintime, maxtime)`, at `object.volume × appVolume × (muted ? 0 : 1)`.
+`SceneWallpaperView` owns one per wallpaper and drives it from the same clock the renderer gets, so
+delays and the `startsilent` fade stay in step with the visuals and stop when the wallpaper pauses.
+`wetool sound <dir>` plays a scene's audio with no renderer.
+
+
 *Bloom*: when `general.bloom`, append a synthetic full-screen chain, downsample ¼ → ⅛, blur,
 `_rt_Bloom`, combine, using `_rt_4FrameBuffer` and `_rt_8FrameBuffer`.
 *Puppet warp*: `.mdl` (`MDLV0021` / `MDLV0023`) carries a skinned mesh, bones and animations; the
@@ -564,27 +585,22 @@ vertex shader wants `SKINNING=1`, `BONECOUNT=n`, `g_Bones[]` (`mat4x3`) and the 
 
 In priority order, with everything needed already on disk:
 
-1. **Wire sound.** `WallpaperSoundPlayer` exists. Build one per wallpaper from the scene's `sound`
-   objects, drive `update(time:)` from the render loop with the same clock the renderer gets, and
-   connect `setPaused` / `setVolume` to `WallpaperController` so the app's mute and pause rules reach
-   it. Note `WESceneObject` parses only `playbackmode` and `volume`, so `mintime` / `maxtime` /
-   `startsilent` have to come out of `object.raw` or be added to `SceneModel`.
-2. **Wire web wallpapers.** `WebWallpaperView` exists. Replace the `case .web` branch in
+1. **Wire web wallpapers.** `WebWallpaperView` exists. Replace the `case .web` branch in
    `WallpaperController.show` that sets `lastError` with it, and feed it the project's user
    properties as plain `Any` values, unwrapped (the view wraps them itself). It has no per-frame
    hook, so `updatePointer` needs a timer, and `teardownViews(for:)` must call `stop()` the way it
    does for video.
-3. **Performance.** This is now the largest user-visible problem: `Pixel City` still runs at about
+2. **Performance.** This is now the largest user-visible problem: `Pixel City` still runs at about
    10 fps. The list in section 3 is unchanged and still ordered by expected impact.
-4. **Puppet warp.** `PuppetModel` parses the mesh and computes bone matrices. The renderer needs a
+3. **Puppet warp.** `PuppetModel` parses the mesh and computes bone matrices. The renderer needs a
    skinned vertex layout, `SKINNING` / `BONECOUNT` combos and a `g_Bones` uniform array. Its bind
    transforms are read column-major, which no synthetic test can falsify: if the first real puppet
    renders inside out, transpose there before looking anywhere else. The scripting layer's
    animation stubs become real at the same time.
-5. **Live property edits.** `PropertyStore` drives bindings already, and
+4. **Live property edits.** `PropertyStore` drives bindings already, and
    `ScriptRuntime.userPropertiesChanged` re-delivers them to scripts, but nothing calls it: the
    settings UI still lists properties instead of offering controls.
-6. **Bloom**, then the **audio visualiser** (needs ScreenCaptureKit audio capture and the matching
+5. **Bloom**, then the **audio visualiser** (needs ScreenCaptureKit audio capture and the matching
    permission), then **rope particles**.
 
 ## 8. Conventions and gotchas

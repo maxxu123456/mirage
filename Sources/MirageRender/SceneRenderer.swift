@@ -219,12 +219,15 @@ public final class SceneRenderer {
 
     private func textSpec(for object: WESceneObject, store: PropertyStore?) -> TextLayerSpec {
         let text = object.text ?? .null
-        let resolved = object.textValue?.resolve(store).string ?? (text["value"].string ?? "")
+        let resolved = scriptedValue(object, "text")?.string
+            ?? object.textValue?.resolve(store).string ?? (text["value"].string ?? "")
         return TextLayerSpec(string: resolved,
                              fontPath: object.raw["font"].string,
                              pointSize: object.raw["pointsize"].float ?? 32,
-                             color: object.color.resolve(store).vec3 ?? SIMD3(repeating: 1),
-                             alpha: object.alpha.resolveFloat(store, default: 1),
+                             color: scriptedValue(object, "color")?.vec3
+                                 ?? object.color.resolve(store).vec3 ?? SIMD3(repeating: 1),
+                             alpha: scriptedValue(object, "alpha")?.float
+                                 ?? object.alpha.resolveFloat(store, default: 1),
                              horizontalAlign: object.raw["horizontalalign"].string ?? "center",
                              verticalAlign: object.raw["verticalalign"].string ?? "center",
                              maxWidth: object.raw["maxwidth"].float ?? 500,
@@ -722,6 +725,13 @@ public final class SceneRenderer {
         if let override = spec.override { apply(override.constantShaderValues) }
     }
 
+    /// A value a script wrote onto this object's layer, if any. Scripts animate
+    /// objects they do not drive, so a layer write outranks the stored value.
+    func scriptedValue(_ object: WESceneObject, _ property: String) -> JSON? {
+        guard let values = store.scriptValues, values.hasLayerValues else { return nil }
+        return values.layerValue(object: object.scriptName, property: property)
+    }
+
     /// WE's clock convention: the fraction of the day that has passed, which
     /// feeds both `g_Daytime` and the scripts' `engine.timeOfDay`.
     public static func dayTime() -> Float {
@@ -746,7 +756,7 @@ public final class SceneRenderer {
         }
 
         for object in scene.objects {
-            let name = object.name.isEmpty ? "object\(object.id)" : object.name
+            let name = object.scriptName
             collect(object.origin, name, "origin")
             collect(object.scale, name, "scale")
             collect(object.angles, name, "angles")
@@ -761,9 +771,21 @@ public final class SceneRenderer {
         }
         collect(scene.general.clearColor, "scene", "clearcolor")
         collect(scene.general.zoom, "scene", "zoom")
+        collect(scene.general.ambientColor, "scene", "ambientcolor")
+        collect(scene.general.skylightColor, "scene", "skylightcolor")
+        collect(scene.general.cameraParallax, "scene", "cameraparallax")
+        collect(scene.general.cameraParallaxAmount, "scene", "cameraparallaxamount")
+        collect(scene.general.cameraParallaxDelay, "scene", "cameraparallaxdelay")
+        collect(scene.general.cameraParallaxMouseInfluence, "scene", "cameraparallaxmouseinfluence")
+        collect(scene.general.bloom, "scene", "bloom")
+        // An effect's `visible` still resolves once at load, but registering it
+        // keeps the script running, so the value is right if that ever changes.
+        for object in scene.objects {
+            for effect in object.effects { collect(effect.visible, object.scriptName, "effectvisible") }
+        }
         // Shader constants driven by a script, on the object that owns the pass.
         for layer in layers {
-            let name = layer.object.name.isEmpty ? "object\(layer.object.id)" : layer.object.name
+            let name = layer.object.scriptName
             for pass in layer.passes {
                 for bound in pass.boundConstants { collect(bound.value, name, bound.uniform) }
             }
@@ -776,7 +798,7 @@ public final class SceneRenderer {
         // Every object, not just the scripted ones: a script positions itself
         // relative to layers it does not drive.
         for object in scene.objects {
-            let name = object.name.isEmpty ? "object\(object.id)" : object.name
+            let name = object.scriptName
             var values: [String: JSON] = [
                 "name": .string(object.name),
                 "id": .number(Double(object.id)),
@@ -816,12 +838,13 @@ public final class SceneRenderer {
         let delta = safeTime - lastTime
         let dt = Float(delta.isFinite ? min(0.1, max(0, delta)) : 0)
         lastTime = safeTime
-        updateParallax(dt: dt)
-        // Scripts run first: every resolve below reads what they produced.
+        // Scripts run first: every resolve below, parallax included, reads what
+        // they produced this frame rather than last frame's.
         if let scripts {
             scripts.beginFrame(time: safeTime, frameTime: Double(dt),
                                dayTime: Double(SceneRenderer.dayTime()), cursor: pointerPosition)
         }
+        updateParallax(dt: dt)
 
         // Wallpaper Engine ignores `clearenabled` and always clears the scene target.
         let clearColor = scene.general.clearColor.resolve(store).vec3 ?? SIMD3(repeating: 1)
@@ -844,7 +867,8 @@ public final class SceneRenderer {
         for entry in orderedLayers {
             switch entry {
             case .image(let layer):
-                let visible = layer.object.visible.resolveBool(store, default: true)
+                let visible = scriptedValue(layer.object, "visible")?.bool
+                    ?? layer.object.visible.resolveBool(store, default: true)
                 guard visible else { continue }
                 if layer.object.kind == .text { refreshTextLayer(layer) }
                 let transform = SceneGeometry.resolveTransform(of: layer.object, objects: objectsById, store: store)
@@ -1116,9 +1140,12 @@ public final class SceneRenderer {
     }
 
     private func fillObjectValues(_ bag: inout ShaderValueBag, layer: ImageLayer) {
-        let alpha = layer.object.alpha.resolveFloat(store, default: 1)
-        let color = layer.object.color.resolve(store).vec3 ?? SIMD3(repeating: 1)
-        bag.set("g_Brightness", layer.object.brightness.resolveFloat(store, default: 1))
+        let alpha = scriptedValue(layer.object, "alpha")?.float
+            ?? layer.object.alpha.resolveFloat(store, default: 1)
+        let color = scriptedValue(layer.object, "color")?.vec3
+            ?? layer.object.color.resolve(store).vec3 ?? SIMD3(repeating: 1)
+        bag.set("g_Brightness", scriptedValue(layer.object, "brightness")?.float
+            ?? layer.object.brightness.resolveFloat(store, default: 1))
         bag.set("g_UserAlpha", alpha)
         bag.set("g_Alpha", alpha)
         bag.set("g_Color", color)

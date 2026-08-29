@@ -353,6 +353,24 @@ public final class ScriptEngine {
         }
     }
 
+    /// Reads a layer object's current values back out of JavaScript.
+    ///
+    /// This is how a script's writes reach the renderer. A controller script
+    /// animates layers it does not drive (`layer.origin = pos`), and those
+    /// writes only exist on the JavaScript object until they are read back.
+    public func layerSnapshot(named name: String, properties: [String]) -> [String: JSON] {
+        guard let layer = globalThis?.objectForKeyedSubscript("__weLayers")?
+            .objectForKeyedSubscript(name), layer.isObject else { return [:] }
+        var out: [String: JSON] = [:]
+        for property in properties {
+            guard let raw = layer.objectForKeyedSubscript(property) else { continue }
+            if let value = json(from: raw) { out[property] = value }
+        }
+        return out
+    }
+
+    private var globalThis: JSValue? { context.globalObject }
+
     // MARK: Evaluation
 
     /// Runs `update(value)` and returns its result, or nil when the script did

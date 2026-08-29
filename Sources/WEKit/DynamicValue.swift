@@ -50,6 +50,7 @@ public final class PropertyStore {
 /// which is pure data, never has to know that JavaScript exists.
 public final class ScriptValues {
     private var values: [Int: JSON] = [:]
+    private var layers: [String: [String: JSON]] = [:]
 
     public init() {}
 
@@ -59,7 +60,27 @@ public final class ScriptValues {
     /// only ever overwritten, never cleared between frames.
     public func value(_ id: Int) -> JSON? { values[id] }
 
-    public func removeAll() { values.removeAll(keepingCapacity: true) }
+    /// A script's writes to a layer, its own or another object's.
+    ///
+    /// Scripts routinely animate objects they do not drive: one controller
+    /// script moves a whole group by assigning `layer.origin`. Those writes land
+    /// on the JavaScript layer object, so they are read back after every frame
+    /// and published here, keyed by object name and Wallpaper Engine's property
+    /// name.
+    public func setLayer(_ object: String, _ property: String, _ value: JSON) {
+        layers[object, default: [:]][property] = value
+    }
+
+    public func layerValue(object: String, property: String) -> JSON? {
+        layers[object]?[property]
+    }
+
+    public var hasLayerValues: Bool { !layers.isEmpty }
+
+    public func removeAll() {
+        values.removeAll(keepingCapacity: true)
+        layers.removeAll(keepingCapacity: true)
+    }
 }
 
 /// A scene value that is either a literal or bound to a user property / script.
@@ -77,10 +98,11 @@ public struct DynamicValue: Equatable {
     public let scriptID: Int
 
     public init(value: JSON, user: String? = nil, condition: String? = nil, script: String? = nil,
-                scriptProperties: JSON = .null, scriptID: Int = 0) {
+                scriptProperties: JSON = .null) {
         self.value = value; self.user = user; self.condition = condition; self.script = script
         self.scriptProperties = scriptProperties
-        self.scriptID = script == nil ? 0 : (scriptID == 0 ? DynamicValue.nextScriptID() : scriptID)
+        // Only the counter hands out ids, so two values can never collide.
+        self.scriptID = script == nil ? 0 : DynamicValue.nextScriptID()
     }
 
     public static func == (a: DynamicValue, b: DynamicValue) -> Bool {

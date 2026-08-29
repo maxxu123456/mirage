@@ -56,6 +56,7 @@ final class WallpaperController: ObservableObject {
         settings.$muted.combineLatest(settings.$volume)
             .sink { [weak self] muted, volume in
                 self?.videoViews.values.forEach { $0.setMuted(muted, volume: Float(volume)) }
+                self?.sceneViews.values.forEach { $0.setMuted(muted, volume: Float(volume)) }
             }
             .store(in: &cancellables)
     }
@@ -145,6 +146,7 @@ final class WallpaperController: ObservableObject {
         loadGeneration[displayId] = (loadGeneration[displayId] ?? 0) + 1
         videoViews[displayId]?.stop()
         videoViews.removeValue(forKey: displayId)
+        sceneViews[displayId]?.stop()
         sceneViews.removeValue(forKey: displayId)
         imageViews.removeValue(forKey: displayId)
     }
@@ -202,7 +204,9 @@ final class WallpaperController: ObservableObject {
                           let window = self.windows[displayId] else { return }
                     switch outcome {
                     case .success(let renderer):
-                        let view = SceneWallpaperView(renderer: renderer, context: context)
+                        let view = SceneWallpaperView(renderer: renderer, context: context,
+                                                      muted: self.settings.muted,
+                                                      volume: Float(self.settings.volume))
                         view.fpsCap = fpsCap
                         self.sceneViews[displayId] = view
                         window.contentView = view

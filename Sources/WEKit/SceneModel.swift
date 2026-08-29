@@ -171,6 +171,10 @@ public struct WESceneObject: Identifiable {
     public let playbackMode: String?
     public let volume: DynamicValue
 
+    /// The name scripts address this object by. Wallpaper Engine keys layers by
+    /// name, and an unnamed object still has to be addressable.
+    public var scriptName: String { name.isEmpty ? "object\(id)" : name }
+
     public init(json: JSON) {
         raw = json
         id = json["id"].int ?? 0

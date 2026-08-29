@@ -21,15 +21,26 @@ public final class ScriptRuntime {
         let label: String
     }
 
+    /// The layer properties read back after every frame. Wallpaper Engine's own
+    /// names, because that is what a script assigns to.
+    private static let writableProperties = [
+        "origin", "scale", "angles", "size", "alpha", "color", "brightness", "visible", "text",
+    ]
+
     private let engine: ScriptEngine
     private let values = ScriptValues()
     private var bindings: [Int: Binding] = [:]
     private var registered = Set<Int>()
+    private var seededObjects: [String] = []
+    private var lastSnapshot: [String: [String: JSON]] = [:]
 
     public private(set) var diagnostics: [String] = []
 
     /// How many scripted values are registered, for diagnostics.
     public var boundCount: Int { bindings.count }
+
+    /// What scripts have written onto each layer, for diagnostics.
+    public var layerWrites: [String: [String: JSON]] { lastSnapshot }
 
     public init(workshopId: String?, canvasSize: SIMD2<Float>, store: PropertyStore?, locator: AssetLocator?) {
         engine = ScriptEngine(workshopId: workshopId)
@@ -57,6 +68,12 @@ public final class ScriptRuntime {
     /// layer they drive and its neighbours. Call before `register`.
     public func seed(object: String, values: [String: JSON]) {
         engine.seedLayer(named: object, values: values)
+        seededObjects.append(object)
+        // The baseline is what the layer holds after seeding, not what was
+        // seeded: a layer object also carries defaults for properties the scene
+        // never set, and those must not be mistaken for a script's writes.
+        lastSnapshot[object] = engine.layerSnapshot(named: object,
+                                                    properties: ScriptRuntime.writableProperties)
     }
 
     /// Registers one scripted value. Safe to call twice for the same value.
@@ -84,7 +101,23 @@ public final class ScriptRuntime {
             guard let produced = engine.evaluate(binding.handle, current: binding.current) else { continue }
             values.set(id, produced)
         }
+        // Scripts animate layers they do not drive, so their writes only exist
+        // on the JavaScript objects until they are read back here.
+        if !bindings.isEmpty { publishLayerWrites() }
         collectDiagnostics()
+    }
+
+    private func publishLayerWrites() {
+        for object in seededObjects {
+            let snapshot = engine.layerSnapshot(named: object, properties: ScriptRuntime.writableProperties)
+            guard !snapshot.isEmpty else { continue }
+            var previous = lastSnapshot[object] ?? [:]
+            for (property, value) in snapshot where previous[property] != value {
+                previous[property] = value
+                values.setLayer(object, property, value)
+            }
+            lastSnapshot[object] = previous
+        }
     }
 
     private var reportedDiagnostics = 0

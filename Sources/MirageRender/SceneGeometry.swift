@@ -47,6 +47,16 @@ public enum SceneGeometry {
 
     /// Folds `parent` chains: `origin = parentOrigin + rotateCCW(childOrigin * parentScale, parentAngle)`,
     /// scales multiply, angles add. Depth-capped like lwe (32).
+    /// A value a script wrote onto this object's layer, if any.
+    ///
+    /// Scripts animate objects they do not drive, so a layer write outranks the
+    /// object's own stored value. It is read through the property store because
+    /// that is already threaded everywhere a scene value is resolved.
+    static func scripted(_ object: WESceneObject, _ property: String, _ store: PropertyStore?) -> JSON? {
+        guard let values = store?.scriptValues, values.hasLayerValues else { return nil }
+        return values.layerValue(object: object.scriptName, property: property)
+    }
+
     public static func resolveTransform(of object: WESceneObject,
                                         objects: [Int: WESceneObject],
                                         store: PropertyStore?) -> ResolvedTransform {
@@ -59,9 +69,9 @@ public enum SceneGeometry {
             current = parent
         }
         func local(_ o: WESceneObject) -> ResolvedTransform {
-            ResolvedTransform(origin: o.origin.resolve(store).vec3 ?? .zero,
-                              scale: o.scale.resolve(store).vec3 ?? SIMD3(repeating: 1),
-                              angle: (o.angles.resolve(store).vec3 ?? .zero).z)
+            ResolvedTransform(origin: scripted(o, "origin", store)?.vec3 ?? o.origin.resolve(store).vec3 ?? .zero,
+                              scale: scripted(o, "scale", store)?.vec3 ?? o.scale.resolve(store).vec3 ?? SIMD3(repeating: 1),
+                              angle: (scripted(o, "angles", store)?.vec3 ?? o.angles.resolve(store).vec3 ?? .zero).z)
         }
         var resolved = local(chain[chain.count - 1])
         var index = chain.count - 2
