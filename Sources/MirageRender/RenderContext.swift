@@ -133,8 +133,17 @@ public final class RenderContext {
     public let commandQueue: MTLCommandQueue
     public let supportsBC: Bool
 
+    // Bounded, least recently used first. Switching wallpapers repeatedly would
+    // otherwise grow these forever: roughly 25 to 30 shader programs, so 50 to
+    // 60 libraries, per wallpaper. Evicting is safe at any moment because Metal
+    // retains a pipeline for as long as an encoder is using it, and anything
+    // dropped too eagerly is simply rebuilt from the shader disk cache.
+    private static let maximumCachedPipelines = 512
+    private static let maximumCachedLibraries = 512
     private var pipelineCache: [String: MTLRenderPipelineState] = [:]
+    private var pipelineOrder: [String] = []
     private var libraryCache: [String: MTLLibrary] = [:]
+    private var libraryOrder: [String] = []
     private var samplerCache: [SamplerKey: MTLSamplerState] = [:]
     private let lock = NSRecursiveLock()
 
@@ -163,9 +172,28 @@ public final class RenderContext {
 
     // MARK: Libraries & pipelines
 
+    /// How many pipelines and libraries are held, for diagnostics and tests.
+    public var cacheCounts: (pipelines: Int, libraries: Int) {
+        lock.lock(); defer { lock.unlock() }
+        return (pipelineCache.count, libraryCache.count)
+    }
+
+    /// Moves a key to the most recently used end.
+    private func touch(_ key: String, in order: inout [String]) {
+        if let index = order.firstIndex(of: key) { order.remove(at: index) }
+        order.append(key)
+    }
+
+    private func evict<Value>(_ cache: inout [String: Value], _ order: inout [String], limit: Int) {
+        while order.count > limit, let oldest = order.first {
+            order.removeFirst()
+            cache.removeValue(forKey: oldest)
+        }
+    }
+
     public func makeLibrary(source: String, key: String) throws -> MTLLibrary {
         lock.lock(); defer { lock.unlock() }
-        if let lib = libraryCache[key] { return lib }
+        if let lib = libraryCache[key] { touch(key, in: &libraryOrder); return lib }
         let options = MTLCompileOptions()
         if #available(macOS 15.0, *) {
             options.mathMode = .fast
@@ -175,6 +203,8 @@ public final class RenderContext {
         do {
             let lib = try device.makeLibrary(source: source, options: options)
             libraryCache[key] = lib
+            touch(key, in: &libraryOrder)
+            evict(&libraryCache, &libraryOrder, limit: RenderContext.maximumCachedLibraries)
             return lib
         } catch {
             throw RenderError.libraryCompilation("\(error)\n\(ShaderCompiler.numbered(source))")
@@ -195,7 +225,7 @@ public final class RenderContext {
             blend.mode.rawValue, blend.writesAlpha ? "a" : "-",
         ].joined(separator: "|")
         lock.lock(); defer { lock.unlock() }
-        if let p = pipelineCache[key] { return p }
+        if let p = pipelineCache[key] { touch(key, in: &pipelineOrder); return p }
 
         // Only reached once per distinct pipeline, so the hashes here are free.
         let vertexHash = ShaderCompiler.hash(program.vertex.msl)
@@ -222,6 +252,8 @@ public final class RenderContext {
         do {
             let state = try device.makeRenderPipelineState(descriptor: desc)
             pipelineCache[key] = state
+            touch(key, in: &pipelineOrder)
+            evict(&pipelineCache, &pipelineOrder, limit: RenderContext.maximumCachedPipelines)
             return state
         } catch {
             throw RenderError.pipelineCreation("\(label): \(error)")

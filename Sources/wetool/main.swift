@@ -456,6 +456,10 @@ case "render":
     }
     writePNG(rgba, width: size.0, height: size.1, to: rest[1])
     print("wrote \(rest[1])")
+    if rest.contains("--cache-counts") {
+        let counts = renderer.context.cacheCounts
+        print("cache: \(counts.pipelines) pipelines, \(counts.libraries) libraries")
+    }
     if !locator.unresolvedPaths.isEmpty { print("unresolved: \(locator.unresolvedPaths)") }
     if !renderer.diagnostics.isEmpty { print(renderer.diagnostics.joined(separator: "\n")) }
     if !renderer.scriptDiagnostics.isEmpty { print(renderer.scriptDiagnostics.joined(separator: "\n")) }

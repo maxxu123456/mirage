@@ -201,8 +201,11 @@ Other limitations:
   own frequency range, remapped through `audioprocessingbounds` and its exponent. Silence leaves the
   rate alone rather than stopping emission, so a muted or unpermitted Mac still gets its particles.
 * Text **background** passes (`opaquebackground`, `padding`) are not drawn; only the glyphs are.
-* `RenderContext`'s pipeline and library caches are never evicted, so memory grows slowly across
-  many wallpaper switches within one session (bounded by the number of distinct shader variants used).
+* `RenderContext`'s pipeline and library caches are bounded, least recently used first, at 512 each.
+  One wallpaper holds roughly 36 pipelines and 50 libraries, so about ten switches fit before
+  anything is evicted. Evicting is safe at any moment: Metal retains a pipeline while an encoder is
+  using it, and anything dropped too eagerly is rebuilt from the shader disk cache.
+  `wetool render --cache-counts` reports the occupancy.
 
 ### Performance
 
