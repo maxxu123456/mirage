@@ -58,6 +58,10 @@ public final class ParticleLayer {
 
     private var particles: [Particle]
     private var liveCount = 0
+    /// Where parent particles were born and died this frame, which is what a
+    /// child system spawns from. Cleared at the start of every update.
+    private(set) var birthEvents: [SIMD3<Float>] = []
+    private(set) var deathEvents: [(position: SIMD3<Float>, velocity: SIMD3<Float>)] = []
     private var vertices: [ParticleVertex] = []
     private var indices: [UInt16] = []
     private var emitterTimers: [Float]
@@ -110,6 +114,38 @@ public final class ParticleLayer {
 
     func note(_ message: String) { diagnostics.append(message) }
 
+    /// Only a system with children pays for event bookkeeping.
+    var recordEvents = false
+    /// Systems this one spawns, with the rule that triggers each.
+    var children: [(spec: WEParticleSystem.Child, layer: ParticleLayer)] = []
+
+    /// Spawns one particle at a position already in render space, as a child
+    /// system does when its parent emits or dies.
+    ///
+    /// The initializer chain runs as usual, so the child keeps its own size,
+    /// colour and lifetime, and then the parent's position replaces the
+    /// emitter's and the inherited velocity is added on top.
+    func spawnExternal(at position: SIMD3<Float>, inherit velocity: SIMD3<Float>, scale: Float) {
+        guard liveCount < particles.count, let emitter = system.emitters.first else { return }
+        var particle = spawn(from: emitter)
+        particle.position = position
+        particle.velocity += velocity
+        if scale.isFinite, scale > 0 {
+            particle.size *= scale
+            particle.initSize *= scale
+        }
+        particles[liveCount] = particle
+        liveCount += 1
+    }
+
+    /// Positions of the live parent particles, for a child that rides along.
+    func livePositions(_ body: (SIMD3<Float>) -> Void) {
+        for index in 0..<liveCount { body(particles[index].position) }
+    }
+
+    /// Removes every particle, used when a follow child is re-seated each frame.
+    func removeAll() { liveCount = 0 }
+
     /// Called once the particle texture is resolved, so the sprite sheet grid is known.
     func configureSheet(with texture: GPUTexture?) {
         self.texture = texture
@@ -125,6 +161,11 @@ public final class ParticleLayer {
     // MARK: Per frame
 
     /// Advances the simulation. `dt` is clamped by the caller.
+    func beginEvents() {
+        birthEvents.removeAll(keepingCapacity: true)
+        deathEvents.removeAll(keepingCapacity: true)
+    }
+
     func update(dt: Float, time: Float, sceneWidth: Float, sceneHeight: Float,
                 projection: simd_float4x4, transform: ResolvedTransform, parallax: SIMD2<Float>,
                 pointer: SIMD2<Float>, store: PropertyStore?) {
@@ -195,6 +236,7 @@ public final class ParticleLayer {
             for _ in 0..<min(spawnCount, particles.count) {
                 guard liveCount < particles.count else { break }
                 particles[liveCount] = spawn(from: emitter)
+                if recordEvents { birthEvents.append(particles[liveCount].position) }
                 liveCount += 1
             }
         }
@@ -315,7 +357,10 @@ public final class ParticleLayer {
         for read in 0..<liveCount {
             var particle = particles[read]
             particle.age += dt
-            if particle.age >= particle.lifetime { continue }
+            if particle.age >= particle.lifetime {
+                if recordEvents { deathEvents.append((particle.position, particle.velocity)) }
+                continue
+            }
 
             // Operators are multiplicative onto the spawn values, so reset first.
             particle.color = particle.initColor

@@ -23,6 +23,41 @@ public struct WEParticleSystem {
     public let operators: [Operator]
     public let renderer: Renderer
     public let controlPoints: [ControlPoint]
+    /// Systems this one spawns: a firework's sparks, a raindrop's splash, the
+    /// glow that follows a shooting star.
+    public let children: [Child]
+
+    /// A child particle system and when the parent triggers it.
+    public struct Child {
+        /// When the parent spawns one of these.
+        public enum Trigger: String {
+            /// As a parent particle is born.
+            case spawn = "eventspawn"
+            /// As a parent particle dies, which is what an explosion is.
+            case death = "eventdeath"
+            /// Every frame, riding along with the live parent particles.
+            case follow = "eventfollow"
+        }
+
+        public let path: String
+        public let id: Int
+        public let trigger: Trigger
+        public let probability: Float
+        public let maxCount: Int?
+        public let scale: SIMD3<Float>
+
+        public init(json: JSON) {
+            path = json["name"].string ?? ""
+            id = json["id"].int ?? 0
+            // A child with no type is a spawn child; two in the sample corpus
+            // leave it out.
+            trigger = Trigger(rawValue: json["type"].string ?? "") ?? .spawn
+            let p = json["probability"].float
+            probability = (p?.isFinite ?? false) ? min(max(p!, 0), 1) : 1
+            maxCount = json["maxcount"].int
+            scale = json["scale"].vec3 ?? SIMD3(repeating: 1)
+        }
+    }
 
     /// bit 0: positions are world space, bit 1: no sprite frame blending, bit 2: perspective.
     public var isWorldSpace: Bool { flags & 1 != 0 }
@@ -44,6 +79,9 @@ public struct WEParticleSystem {
         self.operators = (json["operator"].array ?? []).map(Operator.init(json:))
         self.renderer = Renderer(json: (json["renderer"].array ?? []).first ?? .null)
         self.controlPoints = (json["controlpoint"].array ?? []).map(ControlPoint.init(json:))
+        self.children = (json["children"].array ?? [])
+            .map(Child.init(json:))
+            .filter { !$0.path.isEmpty && $0.probability > 0 }
     }
 
     // MARK: Emitter

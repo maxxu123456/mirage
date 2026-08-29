@@ -413,7 +413,7 @@ public final class SceneRenderer {
         }
     }
 
-    private func makeParticleLayer(object: WESceneObject) -> ParticleLayer? {
+    private func makeParticleLayer(object: WESceneObject, depth: Int = 0) -> ParticleLayer? {
         let json: JSON
         if let path = object.particlePath {
             guard let loaded = locator.json(path) else {
@@ -452,6 +452,31 @@ public final class SceneRenderer {
             return nil
         }
         layer.pass = pass
+
+        // Child systems: a firework's sparks, a raindrop's splash, the glow that
+        // rides along with a shooting star. One level deep is all the format
+        // uses, and the depth guard keeps a malformed file from recursing.
+        if depth < 2 {
+            for child in system.children {
+                guard let childJSON = locator.json(child.path) else {
+                    layer.note("child system not found: \(child.path)")
+                    continue
+                }
+                let childObject = WESceneObject(json: .object([
+                    "id": .number(Double(object.id)),
+                    "name": .string(object.name + "/" + (child.path as NSString).lastPathComponent),
+                    "particle": childJSON,
+                ]))
+                guard let childLayer = makeParticleLayer(object: childObject, depth: depth + 1) else { continue }
+                layer.children.append((child, childLayer))
+            }
+            layer.recordEvents = !layer.children.isEmpty
+            if !layer.children.isEmpty {
+                layer.note("built \(layer.children.count) child system(s): "
+                    + layer.children.map { $0.spec.trigger.rawValue }.joined(separator: ", "))
+            }
+        }
+
         diagnostics.append(contentsOf: layer.diagnostics.map { "[\(object.id)] \($0)" })
         return layer
     }
@@ -1415,6 +1440,39 @@ public final class SceneRenderer {
     /// Particles do not go through the image pass chain: the geometry is rebuilt on the CPU
     /// each frame and the vertex shader expands the billboards, so this is the one draw that
     /// needs the real model and view-projection matrices.
+    /// Spawns a child system's particles from what its parent did this frame.
+    ///
+    /// A death child is an explosion: it fires where a parent particle expired,
+    /// inheriting its velocity. A spawn child fires as the parent emits. A
+    /// follow child rides the live parent particles and is re-seated each frame
+    /// rather than accumulating.
+    private func seed(child: ParticleLayer, spec: WEParticleSystem.Child, from parent: ParticleLayer) {
+        switch spec.trigger {
+        case .death:
+            for event in parent.deathEvents where randomChance(spec.probability) {
+                child.spawnExternal(at: event.position, inherit: event.velocity, scale: spec.scale.x)
+            }
+        case .spawn:
+            for position in parent.birthEvents where randomChance(spec.probability) {
+                child.spawnExternal(at: position, inherit: .zero, scale: spec.scale.x)
+            }
+        case .follow:
+            child.removeAll()
+            parent.livePositions { position in
+                guard randomChance(spec.probability) else { return }
+                child.spawnExternal(at: position, inherit: .zero, scale: spec.scale.x)
+            }
+        }
+    }
+
+    private var childRandom = FastRandom(seed: 0x5EED_1234)
+
+    private func randomChance(_ probability: Float) -> Bool {
+        guard probability < 1 else { return true }
+        guard probability > 0 else { return false }
+        return childRandom.float() < probability
+    }
+
     private func encodeParticles(_ layer: ParticleLayer, globals: ShaderValueBag, elapsed: Float, dt: Float,
                                  projection: simd_float4x4, objectsById: [Int: WESceneObject],
                                  commandBuffer: MTLCommandBuffer) {
@@ -1422,9 +1480,19 @@ public final class SceneRenderer {
         guard layer.object.visible.resolveBool(store, default: true) else { return }
 
         let transform = SceneGeometry.resolveTransform(of: layer.object, objects: objectsById, store: store)
+        if layer.recordEvents { layer.beginEvents() }
         layer.update(dt: dt, time: elapsed, sceneWidth: Float(sceneWidth), sceneHeight: Float(sceneHeight),
                      projection: projection, transform: transform,
                      parallax: parallaxOffset(for: layer.object), pointer: pointerPosition, store: store)
+
+        // Children ride on the parent's frame: they see the same transform and
+        // spawn from what the parent just did.
+        for (spec, child) in layer.children {
+            seed(child: child, spec: spec, from: layer)
+
+            encodeParticles(child, globals: globals, elapsed: elapsed, dt: dt, projection: projection,
+                            objectsById: objectsById, commandBuffer: commandBuffer)
+        }
 
         let indexCount = layer.buildGeometry()
         guard indexCount > 0 else { return }

@@ -128,8 +128,9 @@ and ping-pong wiring), `SceneRenderer` (scene build, frame loop, present, offscr
 * **Particles**: a CPU simulation feeding `genericparticle`. Both emitter shapes, all eight
   initializers, and the ten operators the corpus uses (movement, alphafade, sizechange, the three
   oscillators, turbulence over curl noise, vortex, controlpointattract, colorchange), plus
-  sprite-sheet animation, trails and `instanceoverride`. Verified against `Cozy, LoFi Shop`, whose
-  rain now matches its preview.
+  sprite-sheet animation, trails, `instanceoverride`, and child systems (a raindrop's splash, a
+  firework's sparks, the glow that follows a shooting star). Verified against `Cozy, LoFi Shop`,
+  whose rain now matches its preview and whose splash droplets are the children.
 * **Text layers**: CoreText rasterisation into an r8 coverage texture, fed through the normal image
   pass chain so effects and colour blending apply. Fonts load from inside `scene.pkg`. Verified
   against `Cozy, LoFi Shop` and `Pixel Pokemon`, where the clock and date sit where the preview puts
@@ -182,7 +183,9 @@ Other limitations:
   `Pixel City` drew a white square where its day/night cross-fade should be.
 * `camerashake`, `camerafade`, `camerapreview` are ignored, they are editor conveniences.
 * Multi-display is implemented but has only been tested on a single display.
-* Particle **child systems** (`children`) and audio-driven emitter rates are not implemented.
+* Particle **child systems** (`children`) run: a parent's births and deaths seed the child, and a
+  `eventfollow` child is re-seated on the live parent particles each frame. Audio-driven emitter
+  rates are still not implemented, since the spectrum is zeros.
 * Text **background** passes (`opaquebackground`, `padding`) are not drawn; only the glyphs are.
 * `RenderContext`'s pipeline and library caches are never evicted, so memory grows slowly across
   many wallpaper switches within one session (bounded by the number of distinct shader variants used).
