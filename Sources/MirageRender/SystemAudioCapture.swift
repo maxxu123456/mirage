@@ -47,6 +47,11 @@ final class SystemAudioCapture {
     private var ioProcID: AudioDeviceIOProcID?
     private var deviceListener: AudioObjectPropertyListenerBlock?
 
+    /// Guards the tap, aggregate and IOProc handles. `start()` can be entered
+    /// from the device-change listener on one thread while the provider calls
+    /// `stop()` on another, and `start()` itself calls `stop()`, so it is
+    /// recursive. The IOProc never takes this lock, only the ring's.
+    private let stateLock = NSRecursiveLock()
     private let lock = OSAllocatedUnfairLock(initialState: RingState())
     private struct RingState {
         var left = [Float](repeating: 0, count: SystemAudioCapture.ringSize)
@@ -61,6 +66,8 @@ final class SystemAudioCapture {
     // MARK: Lifecycle
 
     func start() throws {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         stop()
 
         let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
@@ -128,6 +135,8 @@ final class SystemAudioCapture {
     }
 
     func stop() {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         if let ioProcID, aggregateID != kAudioObjectUnknown {
             AudioDeviceStop(aggregateID, ioProcID)
             AudioDeviceDestroyIOProcID(aggregateID, ioProcID)
@@ -149,17 +158,19 @@ final class SystemAudioCapture {
     /// The most recent analysis window for each channel, oldest sample first.
     func latestWindow() -> (left: [Float], right: [Float]) {
         let size = SpectrumAnalyzer.windowSize
-        return lock.withLock { state in
-            var left = [Float](repeating: 0, count: size)
-            var right = [Float](repeating: 0, count: size)
+        // Allocated outside the lock: the IOProc waits on it, and a real time
+        // thread must never wait on a malloc.
+        var left = [Float](repeating: 0, count: size)
+        var right = [Float](repeating: 0, count: size)
+        lock.withLock { state in
             var index = (state.writeIndex - size + Self.ringSize) % Self.ringSize
             for i in 0..<size {
                 left[i] = state.left[index]
                 right[i] = state.right[index]
                 index = (index + 1) % Self.ringSize
             }
-            return (left, right)
         }
+        return (left, right)
     }
 
     private func consume(_ input: UnsafePointer<AudioBufferList>) {
@@ -274,6 +285,7 @@ public final class AudioSpectrumProvider {
     private var consumers = 0
     private var timer: DispatchSourceTimer?
     private var analyzer = SpectrumAnalyzer()
+    private var analyzerSampleRate: Double = 48_000
     private var leftSmoother = SpectrumSmoother()
     private var rightSmoother = SpectrumSmoother()
     private var left = [Float](repeating: 0, count: SpectrumAnalyzer.bandCount)
@@ -327,6 +339,7 @@ public final class AudioSpectrumProvider {
             return
         }
         backing = capture
+        analyzerSampleRate = capture.sampleRate
         analyzer = SpectrumAnalyzer(sampleRate: capture.sampleRate)
         setState(.running)
 
@@ -353,6 +366,13 @@ public final class AudioSpectrumProvider {
 
     private func analyze() {
         guard #available(macOS 14.2, *), let capture = backing as? SystemAudioCapture else { return }
+        // Plugging in a device at another rate restarts the tap, and the band
+        // edges are in bins, so they have to follow the rate or every band
+        // reports a neighbouring frequency.
+        if capture.sampleRate != analyzerSampleRate {
+            analyzerSampleRate = capture.sampleRate
+            analyzer = SpectrumAnalyzer(sampleRate: capture.sampleRate)
+        }
         let window = capture.latestWindow()
         let l = leftSmoother.smooth(analyzer.bands(window.left))
         let r = rightSmoother.smooth(analyzer.bands(window.right))

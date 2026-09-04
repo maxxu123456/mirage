@@ -240,8 +240,11 @@ public final class SceneRenderer {
         // A real mip chain, refreshed from the scene when something samples it.
         // Aliasing it to the scene target, as this used to, means a shader that
         // asks for a blurred reflection by LOD always reads level 0.
+        // The sampler has to say it has mips, or `.notMipmapped` pins every
+        // LOD lookup to level 0 and the chain is never read.
         if let mipped = makeTarget(name: "_rt_MipMappedFrameBuffer", width: renderWidth,
-                                   height: renderHeight, samplerKey: .linearClamp,
+                                   height: renderHeight,
+                                   samplerKey: SamplerKey(nearest: false, clamp: true, hasMips: true),
                                    clearOnce: true, mipmapped: true) {
             mipTarget = mipped
             sceneScope.register("_rt_MipMappedFrameBuffer", mipped)
@@ -547,6 +550,10 @@ public final class SceneRenderer {
         }
     }
 
+    static let maximumChildSystems = 8
+    static let maximumParticleLayers = 256
+    private var particleLayerCount = 0
+
     private func makeParticleLayer(object: WESceneObject, depth: Int = 0) -> ParticleLayer? {
         let json: JSON
         if let path = object.particlePath {
@@ -594,8 +601,11 @@ public final class SceneRenderer {
         // Child systems: a firework's sparks, a raindrop's splash, the glow that
         // rides along with a shooting star. One level deep is all the format
         // uses, and the depth guard keeps a malformed file from recursing.
+        // Depth and breadth are both bounded: a file can list itself as its own
+        // child any number of times, and each layer allocates its whole pool.
         if depth < 2 {
-            for child in system.children {
+            for child in system.children.prefix(SceneRenderer.maximumChildSystems)
+            where particleLayerCount < SceneRenderer.maximumParticleLayers {
                 guard let childJSON = locator.json(child.path) else {
                     layer.note("child system not found: \(child.path)")
                     continue
@@ -606,6 +616,7 @@ public final class SceneRenderer {
                     "particle": childJSON,
                 ]))
                 guard let childLayer = makeParticleLayer(object: childObject, depth: depth + 1) else { continue }
+                particleLayerCount += 1
                 layer.children.append((child, childLayer))
             }
             layer.recordEvents = !layer.children.isEmpty
@@ -914,11 +925,11 @@ public final class SceneRenderer {
         for (index, spec) in specs.enumerated() {
             guard let compiled = compile(spec: spec, objectTexture: layer.texture, note: { layer.note($0) }) else { continue }
             compiled.targetName = spec.target
-            if index == puppetSpecIndex { layer.puppetPassIndex = layer.passes.count }
+            if index == puppetSpecIndex { layer.puppetPass = compiled }
             layer.append(compiled)
         }
         // A puppet whose pass failed to compile falls back to its flat quad.
-        if layer.puppetPassIndex == nil { layer.puppet = nil }
+        if layer.puppetPass == nil { layer.puppet = nil }
     }
 
     // MARK: Pass compilation

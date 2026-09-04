@@ -387,12 +387,18 @@ public struct WEParticleSystem {
 
         public init(json: JSON) {
             guard json.exists, json["enabled"].bool ?? true else { return }
-            alpha = json["alpha"].float ?? 1
-            size = json["size"].float ?? 1
-            lifetime = json["lifetime"].float ?? 1
-            rate = json["rate"].float ?? 1
-            speed = json["speed"].float ?? 1
-            count = json["count"].float ?? 1
+            // Every multiplier is bounded: these feed products that end up as
+            // integers, and a file can say 3e38 as easily as 3.
+            func bounded(_ key: String, upTo limit: Float) -> Float {
+                let value = json[key].float ?? 1
+                return value.isFinite ? min(limit, max(0, value)) : 1
+            }
+            alpha = bounded("alpha", upTo: 100)
+            size = bounded("size", upTo: 1000)
+            lifetime = bounded("lifetime", upTo: 1000)
+            rate = bounded("rate", upTo: 1000)
+            speed = bounded("speed", upTo: 1000)
+            count = bounded("count", upTo: 100)
             if let c = json["color"].vec3 { color = c / 255 }
             if let c = json["colorn"].vec3 { colorMultiplier = c }
         }

@@ -768,13 +768,81 @@ with SteamCMD were needed to test it at all.
 
 ### 7.5 Where to pick up
 
-In priority order, with everything needed already on disk:
+An adversarial review of everything built in the 2026-08-29 session (five reviewers, each finding
+then independently re-verified) produced 25 findings. Nine are fixed and verified; the rest are
+listed below with the evidence, so they can be acted on without re-deriving them. Two verifiers
+were cut off before finishing, so items marked *unverified* are the reviewer's claim, checked by
+reading but not yet by running.
 
-1. **Performance.** This is now the largest user-visible problem: `Pixel City` still runs at about
-   10 fps. The list in section 3 is unchanged and still ordered by expected impact.
-2. **Script-driven puppet animation.** `ScriptEngine`'s animation layer stubs accept `blend` and
-   `rate` writes and drop them, so a script that plays an animation on a puppet has no effect. The
-   layer write-back machinery from section 7.3 is what this needs.
+**Fixed in the follow-up commit:**
+
+* `SystemAudioCapture.start()` and `stop()` raced: the output-device listener restarts the tap on a
+  concurrent queue while the provider stops it on another, and `start()` calls `stop()`, so a
+  recursive lock now covers both. *Verified by reading the path end to end.*
+* The spectrum analyser was built once, so plugging in a device at another sample rate left the band
+  edges wrong. It is rebuilt when the rate moves.
+* `vDSP_create_fftsetup` was never destroyed; the handle now lives in a class with a `deinit`.
+* `latestWindow()` allocated inside the lock the real-time IOProc waits on; it allocates outside now.
+* `_rt_MipMappedFrameBuffer` was registered with a sampler that said it had no mips, so the chain
+  from the previous commit was unreachable (`.notMipmapped` pins every LOD to level 0).
+* A puppet's drawing pass was held by index into the active pass list, which `setActiveEffects`
+  re-filters, so a puppet with any switched-off effect silently drew a flat quad. Held by reference.
+* A recycled particle slot kept the dead particle's trail, so a new `ropetrail` particle was drawn
+  back through wherever the old one went. History is reset on spawn.
+* Three traps from hostile files, all reproduced with hand-written scenes in the scratchpad:
+  `rate: 1e38` overflowed the emitter accumulator into `Int()`, `instanceoverride.count: 3e38`
+  overflowed the pool size multiply to infinity before the clamp, and a pool over 16383 particles
+  drew more indices than the 16 bit index buffer holds. All clamped.
+* Particle `children` were bounded in depth but not breadth: a file listing itself N times built
+  N squared layers, each allocating its whole pool (measured at 27 GB for N = 40). Now at most 8
+  children per system and 256 particle layers per scene.
+
+**Still to do, most serious first:**
+
+1. **Text background layers desynchronise `buildParticleLayers`** (`SceneRenderer.buildParticleLayers`).
+   The merge that splices particle systems into render order advances one image layer per scene
+   object, and a text object with `opaquebackground` now contributes two layers with the same id, so
+   every image layer after it is pushed behind the particle systems. Fix: advance `imageIndex` while
+   `layers[imageIndex].object.id == object.id` rather than once. *Reproducible with a scene that has
+   a boxed text object, a particle object, and an image object listed after the text.*
+2. **With "Render at display resolution" on, compose layers are scaled twice** (`makeLayer`, the
+   `size = SIMD2(texture.resolution.z, texture.resolution.w)` branch). A layer whose slot-0 texture is
+   a scene render target takes its scene-unit size from the target's pixel size, which is already
+   multiplied by `renderScale`. Fix: for a render-target texture, use the visible extent in scene
+   units instead. *Unverified; the reviewer reports checking it on Purple Bedroom at 1280x720.*
+3. **Web wallpaper properties never apply** (`WallpaperController.show`, the `.web` case). The page
+   gets `definition.defaultValue`, not `propertyOverrides(for:)`, and `WebWallpaperView.updateProperties`
+   has no caller, so an edit in the detail panel persists but changes nothing on screen. Fix: build
+   from the overrides, and call `updateProperties` from `setProperty` instead of reloading.
+4. **Editing a property on a video wallpaper restarts the video** (`WallpaperController.setProperty`).
+   The non-scene branch calls `show()`, which tears the player down. Properties do not affect video,
+   so it should do nothing there.
+5. **A display resolution change leaves the crop stale.** `visibleWidth/Height` and `renderScale` are
+   fixed at load from the screen's size, and `refreshDisplays()` only re-places the window. Fix:
+   rebuild the scene when its display's pixel size changes.
+6. **`RenderContext.pipeline` holds its lock across a full MSL compile** while the render thread
+   takes the same lock once per pass per frame. With two displays, loading a second wallpaper stalls
+   the first's frames for the duration of every compile. Fix: compile outside the lock and insert
+   under it.
+7. `makeTarget` appends every `clearOnce` target to `targetsNeedingInitialClear`, which is only
+   drained in `init`, so a text layer that re-rasterises to a larger size leaks its old composites
+   into that array for the renderer's lifetime. Fix: clear them on creation instead, or drain the
+   list at the top of the next frame.
+8. `ShaderCompiler.shared.memoryCache` is unbounded (about 25 KB per program). Bounding the
+   pipeline and library caches did not bound this.
+9. `g_RenderVar0.z` is hard-coded to 0 for a `ropetrail`, which the shader uses as
+   `in_SegmentUVTimeOffset` for the head segment's UV span, so the head samples one texture row.
+10. Scripts have no execution watchdog (JSC's timeout API is private). Known and documented; an
+    infinite loop in a wallpaper's script hangs the render thread. The only real fix is running the
+    engine on its own thread with a deadline, which changes the read-back design in section 7.3.
+11. A slider property whose `min` is the string `"nan"` traps `PropertyControl`'s `ClosedRange`.
+    Sanitise `min`/`max` in `WEUserProperty` or in the control.
+
+Beyond the review, two features have no verifiable case in any of the 25 available wallpapers or 535
+textures, so they were documented rather than built blind: multi-image animated textures (every
+`.tex` has one image) and script-driven puppet animation (`ScriptEngine`'s animation layer stubs
+accept `blend` and `rate` writes and drop them; the only script that uses them drives a hidden
+object).
 
 ### 7.6 Audio visualiser: built
 

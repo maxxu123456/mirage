@@ -19,7 +19,15 @@ public struct SpectrumAnalyzer {
     private static let lowestFrequency: Float = 30
     private static let highestFrequency: Float = 16_000
 
-    private let setup: FFTSetup?
+    /// `vDSP_create_fftsetup` hands back a manually managed object, so it lives
+    /// in a small class whose deinit destroys it; the struct itself has none.
+    private final class Setup {
+        let handle: FFTSetup?
+        init(log2n: vDSP_Length) { handle = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) }
+        deinit { if let handle { vDSP_destroy_fftsetup(handle) } }
+    }
+
+    private let setup: Setup
     private let window: [Float]
     private let windowSum: Float
     /// The first bin of each band, plus one past the end of the last.
@@ -27,7 +35,7 @@ public struct SpectrumAnalyzer {
 
     public init(sampleRate: Double = 48_000) {
         let log2n = vDSP_Length(log2(Float(SpectrumAnalyzer.windowSize)).rounded())
-        setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
+        setup = Setup(log2n: log2n)
 
         var hann = [Float](repeating: 0, count: SpectrumAnalyzer.windowSize)
         vDSP_hann_window(&hann, vDSP_Length(SpectrumAnalyzer.windowSize), Int32(vDSP_HANN_DENORM))
@@ -58,7 +66,7 @@ public struct SpectrumAnalyzer {
     /// rather than reading out of bounds.
     public func bands(_ samples: [Float]) -> [Float] {
         let n = SpectrumAnalyzer.windowSize
-        guard samples.count == n, let setup else {
+        guard samples.count == n, let setup = setup.handle else {
             return [Float](repeating: 0, count: SpectrumAnalyzer.bandCount)
         }
 

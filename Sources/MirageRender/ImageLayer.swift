@@ -172,15 +172,17 @@ public final class ImageLayer {
     }
 
     public var puppet: PuppetBinding?
-    /// The one pass that draws the mesh rather than the quad.
-    public var puppetPassIndex: Int?
+    /// The one pass that draws the mesh rather than the quad. Held by reference
+    /// rather than index, because the active pass list is re-filtered whenever
+    /// an effect is switched, and an index into it would point at the wrong pass.
+    public var puppetPass: CompiledPass?
     /// `screenMatrix` folded with the mesh's own space.
     public var puppetMatrix = matrix_identity_float4x4
 
     /// True when this pass draws the skinned mesh.
     public func drawsPuppet(_ pass: CompiledPass) -> Bool {
-        guard puppet != nil, let index = puppetPassIndex, index < passes.count else { return false }
-        return passes[index] === pass
+        guard puppet != nil, let puppetPass else { return false }
+        return puppetPass === pass
     }
     public var copyMatrix = matrix_identity_float4x4
 

@@ -117,7 +117,9 @@ public final class ParticleLayer {
         self.object = object
         self.system = system
         self.instance = WEParticleSystem.InstanceOverride(json: object.instanceOverride)
-        let capacity = max(1, min(20_000, Int((Float(system.maxCount) * instance.count).rounded())))
+        // Clamped before the conversion, not after: Int(infinity) traps.
+        let requested = Float(system.maxCount) * instance.count
+        let capacity = max(1, Int(min(20_000, requested.isFinite ? max(1, requested) : 1).rounded()))
         self.particles = Array(repeating: Particle(), count: capacity)
         self.emitterTimers = Array(repeating: 0, count: system.emitters.count)
         self.emitterFired = Array(repeating: false, count: system.emitters.count)
@@ -181,7 +183,15 @@ public final class ParticleLayer {
             particle.initSize *= scale
         }
         particles[liveCount] = particle
+        clearHistory(at: liveCount)
         liveCount += 1
+    }
+
+    /// A slot being reused must not carry the previous occupant's trail, or a
+    /// new particle's ribbon is drawn back through wherever the dead one went.
+    private func clearHistory(at index: Int) {
+        guard ropeSegments > 0, index < historyCount.count else { return }
+        historyCount[index] = 0
     }
 
     /// Positions of the live parent particles, for a child that rides along.
@@ -274,6 +284,10 @@ public final class ParticleLayer {
                 spawnCount = emitter.instantaneous
             } else {
                 emitterTimers[index] += dt * emitter.rate * instance.rate * audioFactor(for: emitter)
+                // A rate of 1e38 is a legal number in the file; the accumulator
+                // is capped at the pool size, which is all one frame can use.
+                if !emitterTimers[index].isFinite { emitterTimers[index] = 0 }
+                emitterTimers[index] = min(emitterTimers[index], Float(particles.count))
                 spawnCount = Int(emitterTimers[index])
                 if spawnCount > 0 { emitterTimers[index] -= Float(spawnCount) }
                 if emitter.oncePerFrame { spawnCount = min(spawnCount, 1) }
@@ -282,6 +296,7 @@ public final class ParticleLayer {
             for _ in 0..<min(spawnCount, particles.count) {
                 guard liveCount < particles.count else { break }
                 particles[liveCount] = spawn(from: emitter)
+                clearHistory(at: liveCount)
                 if recordEvents { birthEvents.append(particles[liveCount].position) }
                 liveCount += 1
             }
@@ -670,7 +685,7 @@ public final class ParticleLayer {
             emit(points: points, sizes: sizes, colors: colors)
         }
         vertexCount = written
-        return written / 4 * 6
+        return min(written / 4 * 6, indices.count)
     }
 
     /// Samples a per-point attribute at a fraction along the polyline.
@@ -730,7 +745,11 @@ public final class ParticleLayer {
                 vertexIndex += 1
             }
         }
-        return min(liveCount, vertices.count / 4) * 6
+        // The index buffer covers at most as many quads as a 16 bit index can
+        // address, which can be fewer than the pool holds; drawing past it reads
+        // outside the buffer.
+        vertexCount = min(liveCount, vertices.count / 4) * 4
+        return min(min(liveCount, vertices.count / 4) * 6, indices.count)
     }
 
     var vertexByteCount: Int {
